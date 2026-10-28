@@ -63,4 +63,4 @@ is not planned, because exactness needs both ends on the same file.
 
 ## License
 
-LICENSE_LINE
+Apache License 2.0 — see [LICENSE](LICENSE). Copyright 2026 Scott Dill. The bundled llama.cpp submodule keeps its own MIT license; the model the app downloads (Qwen2.5-0.5B) is Apache 2.0.
