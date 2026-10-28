@@ -6,6 +6,28 @@ refuses it and asks again.
 An Android app that talks to your Meshtastic radio over Bluetooth, plus the codec source. It sends on the PRIVATE_APP
 port (256), so stock firmware carries it like any other data.
 
+## What you get
+
+**Longer messages in one packet.** A Meshtastic packet holds about 200 characters. With Burst the same packet carries
+roughly 600 to 1,200 characters of everyday writing: a paragraph instead of a sentence. Long messages stop getting cut
+off or split into a dozen pieces.
+
+**A quieter channel for everyone.** Fewer bytes means less time on the air. On a shared mesh that means fewer
+collisions, more messages getting through (yours and everyone else's), and longer radio battery life.
+
+**It gets better as you go.** Replies shrink as a conversation goes on. Teams that load the same pack (weather, search
+and rescue) save about a third more again.
+
+**Nothing to subscribe to.** No server, no account, no internet after setup.
+
+## What it takes
+
+- **Both people install Burst** on an Android phone and pair their Meshtastic radios: about 10 minutes, once.
+- **One 531 MB download** on first run, over Wi-Fi: seconds to a few minutes, depending on your connection.
+- **Then type and send.** Measured on a Galaxy S25: a 622-character paragraph took about 9 seconds to compress into one
+  95-byte packet, and the far radio acknowledged it about 20 seconds after that. Older phones will be slower (not yet
+  measured). Each launch also costs a few seconds to load the model and up to half a minute for the radio to connect.
+
 ## Why
 
 **Most of any message is already known.** In a world of AI, the public record of human history, its books and
