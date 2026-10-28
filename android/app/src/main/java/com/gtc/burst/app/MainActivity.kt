@@ -8,6 +8,7 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.gtc.burst.BurstLog
 import com.gtc.burst.BurstNative
 import com.gtc.burst.Chain
 import com.gtc.burst.Codec
@@ -27,7 +28,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun sha256(b: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(b)
     private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
-    /** The 2-byte check a frame carries (a chain link's sits inside its body), as burst_rx._chk. */
+    /** The 2-byte check a frame carries (a chain link's sits inside its body), as the reference receiver reads it. */
     private fun chk(p: ByteArray) = if (p[0] == 0x12.toByte()) p.copyOfRange(4, 6) else p.copyOfRange(1, 3)
 
     /** One link at a time, each waiting for its routing ACK; every delivered frame is indexed by its check (whole
@@ -36,14 +37,14 @@ class MainActivity : AppCompatActivity() {
                          onLink: (Int) -> Unit = {}, record: Boolean = true): Boolean {
         val m = mesh ?: run { say("Not sent: no radio — tap Connect"); return false }
         if (!m.ready) say("Radio not ready yet — waiting up to 60 s before sending")
-        repeat(120) { if (!m.ready) Thread.sleep(500) }              // 10-23 22:18: a send tapped mid-connect was dropped silently
+        repeat(120) { if (!m.ready) Thread.sleep(500) }              // a send tapped mid-connect must wait, not drop
         if (!m.ready) { say("Not sent: the radio never became ready"); return false }
         for ((i, p) in packets.withIndex()) {
             onLink(i)
             var ok = false
             for (attempt in 1..3) {
                 val id = m.send(p, dest, ch)
-                Log.i("burst", "TXWIRE " + Base64.encodeToString(p, Base64.NO_WRAP))
+                BurstLog.content("burst", "TXWIRE " + Base64.encodeToString(p, Base64.NO_WRAP))
                 val err = if (dest == MeshBle.BROADCAST) 0.also { Thread.sleep(3000) } else m.awaitAck(id, 30000)
                 say("TX %d/%d id %08x -> %s: %s".format(i + 1, packets.size, id, label,
                     when (err) { null -> "no ACK"; 0 -> "delivered"; else -> "error $err" }))
@@ -69,14 +70,14 @@ class MainActivity : AppCompatActivity() {
         val text = idx.optString(k, "")
         if (text.isEmpty()) { say("ASK from !%08x for $k: not one of mine".format(from)); return }
         if (prefs.getBoolean("resent_$k", false)) { say("ASK for $k: already resent once"); return }
-        // One resend per MESSAGE, not per link: the box asks once for each refused link, and each ASK used to resend the
-        // whole part — 13 asks became 13 full resends on air (10-24 18:03). The first ASK resends it; the rest are no-ops.
+        // One resend per MESSAGE, not per link: a peer asks once for each refused link, and resending the whole part per
+        // ASK multiplies airtime (13 asks = 13 full resends). The first ASK resends it; the rest are no-ops.
         val tk = "resent_text_" + hex(sha256(text.toByteArray()).copyOf(6))
         synchronized(Session) {
             if (prefs.getBoolean(tk, false)) { prefs.edit().putBoolean("resent_$k", true).apply(); say("ASK for $k: its message is already being resent"); return }
             prefs.edit().putBoolean("resent_$k", true).putBoolean(tk, true).apply()
         }
-        val use08 = Codec.force08 || History(applicationContext, from).reads08()
+        val use08 = Codec.force08 || History.of(applicationContext, from).reads08()
         val packets = Chain.split(c, text, emptyList(), use08)
         say("ASK from !%08x: resending on the base prime (%d packet(s), %d B)".format(from, packets.size, packets.sumOf { it.size }))
         transmit(from, packets, ch, "!%08x".format(from), text)
@@ -88,13 +89,22 @@ class MainActivity : AppCompatActivity() {
         thread { mesh?.let { m -> if (m.ready) { m.send(byteArrayOf(0x06) + chk(p), from, ch); say("ASK sent to !%08x for $k".format(from)) } } }
     }
 
-    private fun say(s: String) { Log.i("burst", s); synchronized(Session.log) { Session.log.append(s + "\n") }; Session.sink?.invoke(s) }
+    /** A line for the on-screen log. [content] = it carries message text: logcat gets it only in debug/test builds. */
+    private fun say(s: String, content: Boolean = false) {
+        if (content) BurstLog.content("burst", s) else Log.i("burst", s)
+        synchronized(Session.log) { Session.log.append(s + "\n") }; Session.sink?.invoke(s)
+    }
 
-    override fun onDestroy() { if (Session.sink === sink) Session.sink = null; if (Chat.onChange === redraw) Chat.onChange = null; super.onDestroy() }
+    private var adminReceiver: android.content.BroadcastReceiver? = null
+
+    override fun onDestroy() {
+        adminReceiver?.let { runCatching { unregisterReceiver(it) } }; adminReceiver = null
+        if (Session.sink === sink) Session.sink = null; if (Chat.onChange === redraw) Chat.onChange = null; super.onDestroy()
+    }
     override fun onResume() { super.onResume(); Session.visible = true; ui.post(tick) }
     override fun onPause() { Session.visible = false; ui.removeCallbacks(tick); super.onPause() }
 
-    // ---- the chat screen (10-24) ----
+    // ---- the chat screen ----
     private val ui = android.os.Handler(android.os.Looper.getMainLooper())
     private lateinit var chatBox: android.widget.LinearLayout
     private lateinit var chatScroll: android.widget.ScrollView
@@ -206,6 +216,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        BurstLog.verbose = BuildConfig.DEBUG || BuildConfig.TEST_HOOKS
         setContentView(R.layout.activity_main)
         log = findViewById(R.id.log)
         synchronized(Session.log) { log.text = Session.log.toString() }   // a rebuilt screen shows what the process already heard
@@ -222,21 +233,25 @@ class MainActivity : AppCompatActivity() {
         val need = arrayOf(android.Manifest.permission.BLUETOOTH_CONNECT, android.Manifest.permission.POST_NOTIFICATIONS)
             .filter { checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
         if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
-        // Back sends Burst to the background instead of closing it, so the radio stays held (10-24)
+        // Back sends Burst to the background instead of closing it, so the radio stays held
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { moveTaskToBack(true) }
         })
-        intent.getStringExtra("radio")?.let { radio.setText(it) }       // test hooks: am start --es radio <name> --es to !<node>
-        intent.getStringExtra("to")?.let { toF.setText(it) }
-        prefs.getString("radio", null)?.let { if (!intent.hasExtra("radio")) radio.setText(it) }
-        prefs.getString("to", null)?.let { if (!intent.hasExtra("to")) toF.setText(it) }
+        // Intent extras are test hooks (am start --es radio NAME --es to !nodeid ...): honoured only in a TEST_HOOKS build,
+        // so no other app on the phone can point the radio or the sends anywhere.
+        val hooks = BuildConfig.TEST_HOOKS
+        val xRadio = if (hooks) intent.getStringExtra("radio") else null
+        val xTo = if (hooks) intent.getStringExtra("to") else null
+        (xRadio ?: prefs.getString("radio", null))?.let { radio.setText(it) }
+        (xTo ?: prefs.getString("to", null))?.let { toF.setText(it) }
         findViewById<TextView>(R.id.peer).text = MeshBle.name(peerId())
         drawChat()
         // Dev toggle: force frame 0x08 to every peer (else 0x08 only to a peer that has sent me a verified 0x08).
         // Persisted; also settable by the test hook `--ez force08 true|false`.
         val force08 = findViewById<CheckBox>(R.id.force08)
-        if (intent.hasExtra("force08")) prefs.edit().putBoolean("force08", intent.getBooleanExtra("force08", false)).apply()
-        Codec.force08 = prefs.getBoolean("force08", true)   // public build: every Burst app reads 0x08, so it is the default; force08.isChecked = Codec.force08
+        if (hooks && intent.hasExtra("force08")) prefs.edit().putBoolean("force08", intent.getBooleanExtra("force08", false)).apply()
+        Codec.force08 = prefs.getBoolean("force08", true)   // every Burst app reads 0x08, so it is the default
+        force08.isChecked = Codec.force08                   // before the listener: the checkbox shows the real setting
         force08.setOnCheckedChangeListener { _, on -> Codec.force08 = on; prefs.edit().putBoolean("force08", on).apply(); say("force 0x08: $on") }
         findViewById<Button>(R.id.connect).setOnClickListener connect@{
             // No radio named yet: pick one from the paired devices, never the first device that happens to be bonded
@@ -254,60 +269,15 @@ class MainActivity : AppCompatActivity() {
             startForegroundService(android.content.Intent(this, BurstService::class.java))   // keep listening with the screen off
             val app = applicationContext
             mesh = MeshBle(app, ::say) { from, to, ch, port, payload ->
-                if (port == 6) Log.i("burst", "ADMINRX " + Base64.encodeToString(payload, Base64.NO_WRAP))
-                if (port != 256) return@MeshBle
-                val c = codec
-                if (payload.size == 1 && payload[0] == 0x09.toByte()) {               // TYPING: the peer's mind is on it now
-                    Session.typingFrom("!%08x".format(from)); Chat.onChange?.invoke("!%08x".format(from)); return@MeshBle
-                }
-                if (payload.isNotEmpty() && payload[0] != 0x06.toByte()) Session.typingDone("!%08x".format(from))
-                if (payload.size >= 3 && payload[0] == 0x06.toByte()) {               // they refused a frame of mine
-                    if (to != MeshBle.BROADCAST) thread { answerAsk(from, ch, payload) }
-                    return@MeshBle
-                }
-                if (c != null && payload.isNotEmpty() && payload[0] == 0x12.toByte()) {
-                    val a = asm ?: Chain.Assembler(c).also { asm = it }
-                    val hist = History(app, from)
-                    val whole = runCatching { a.add(from, payload, hist.candidates()) }.getOrElse { say("link undecodable: ${it.message}"); null }
-                    if (whole == null) { say("RX !%08x link %s".format(from, a.progress(from, payload))); return@MeshBle }
-                    if (whole.verified08) hist.markReads08()                 // it reads the det codec: I may send 0x08 to it
-                    if (whole.allVerified) hist.add(whole.text)
-                    say("RX !%08x (%d packets%s): %s".format(from, whole.total, if (whole.verified08) ", 0x08" else "", whole.text))
-                    if (whole.allVerified) BurstService.notify(app, "!%08x".format(from), whole.text)
-                    return@MeshBle
-                }
-                val hist = History(app, from)
-                val cb = payload.firstOrNull()?.toInt() ?: -1
-                val text = if (c != null && payload.size > 3 && (cb == 0x03 || cb == 0x00 || cb == 0x08))
-                    runCatching { c.uncrunch(payload, hist.candidates()).let {
-                        if (it.verified) {
-                            hist.add(it.text)
-                            BurstService.notify(app, "!%08x".format(from), it.text)
-                            if (it.codec == 8) hist.markReads08()
-                            "${it.text}  [${if (it.codec == 8) "0x08, history ${it.tail?.size ?: 0}" else "history ${if (cb == 0x03) payload[5].toInt() and 0xFF else 0}"}]"
-                        } else if (it.codec == 8) { askFor(from, ch, payload); "(REFUSED 0x08 — ${it.reason}; asked for a resend)" }
-                        else "(UNVERIFIED — check failed) " + it.text } }
-                        .getOrElse { "<undecodable: ${it.message}>" }
-                    else "<${payload.size} bytes, not a burst>"
-                say("RX !%08x ch%d (%d B): %s".format(from, ch, payload.size, text))
-                Log.i("burst", "RXWIRE " + Base64.encodeToString(payload, Base64.NO_WRAP))
+                // Decoding runs the model (seconds): never on the BLE pump thread. One worker keeps arrival order.
+                Session.decode.execute { runCatching { onData(from, to, ch, port, payload) }.onFailure { say("RX handler error: ${it.javaClass.simpleName}") } }
             }.also { it.connect(radio.text.toString().trim()) }
-            // Admin pass-through (10-24): an AdminMessage for MY radio, from the box over adb. Guarded by a token only
-            // `run-as` (debug build, the box) can write: files/admin_token. Replies land in the log as ADMINRX.
-            registerReceiver(object : android.content.BroadcastReceiver() {
-                override fun onReceive(c: android.content.Context, i: android.content.Intent) {
-                    val tok = File(filesDir, "admin_token"); val m = mesh ?: return
-                    if (!tok.exists() || i.getStringExtra("key") != tok.readText().trim()) { say("ADMIN refused: bad key"); return }
-                    val b = Base64.decode(i.getStringExtra("b64") ?: return, Base64.DEFAULT)
-                    thread { m.send(b, m.myNode, 0, 6); say("ADMIN sent ${b.size} B to my radio") }
-                }
-            }, android.content.IntentFilter("com.gtc.burst.ADMIN"), RECEIVER_EXPORTED)
             // test hook: send once the radio is ready. Needs a fresh "nonce": Android re-delivers the launch intent when it
-            // re-creates the app, and without this the same test message went out four more times (10-23).
-            val nonce = intent.getStringExtra("nonce")
+            // re-creates the app, and without this the same test message would go out again on every re-create.
+            val nonce = if (hooks) intent.getStringExtra("nonce") else null
             if (nonce != null && nonce != prefs.getString("nonce", null)) intent.getStringExtra("msg")?.let { msg ->
                 prefs.edit().putString("nonce", nonce).apply()
-                thread { val m = mesh!!; repeat(60) { if (!m.ready) Thread.sleep(500) }; runOnUiThread { input.setText(msg); send.performClick() } }
+                thread { val m = mesh ?: return@thread; repeat(60) { if (!m.ready) Thread.sleep(500) }; runOnUiThread { input.setText(msg); send.performClick() } }
             }
         }
         if (codec != null) { send.isEnabled = true }
@@ -315,7 +285,7 @@ class MainActivity : AppCompatActivity() {
             val model = File(filesDir, "model.gguf")
             if (!model.exists()) {
                 say("First run: downloading the codec model (generic Qwen2.5-0.5B, 531 MB, once) — Wi-Fi recommended")
-                // the foreground service + its wake lock keep a screen-off phone from freezing the download (S25, 10-24: froze at 372 MB)
+                // the foreground service + its wake lock keep a screen-off phone from freezing the download
                 try { startForegroundService(android.content.Intent(this, BurstService::class.java)) } catch (e: Exception) { say("Keep Burst open until the download finishes") }
                 val ok = try { ModelFetch.ensure(model) { p -> runOnUiThread { input.hint = "Getting the model… $p%" }; if (p % 10 == 0) say("Model download $p%") } } catch (e: Exception) { say("Download failed: ${e.message}"); false }
                 if (!ok) { say("Model not ready — reopen Burst to resume the download"); return@thread }
@@ -329,9 +299,9 @@ class MainActivity : AppCompatActivity() {
             val c = Codec(assets.open("codes.bin").readBytes(), assets.open("tables.json").bufferedReader().readText())
             codec = c
             say("Model loaded in ${System.currentTimeMillis() - t0} ms")
-            if (intent.getBooleanExtra("selftest", false)) {      // test hook only: an everyday open goes straight to the chat (10-24)
+            if (hooks && intent.getBooleanExtra("selftest", false)) {      // test hook only: an everyday open goes straight to the chat
                 selfTest(c)
-                // the 0x08 selftest costs ~26 s on the S25: only with the Force-0x08 toggle on or `--ez selftest08 true`
+                // the 0x08 selftest costs ~26 s on a current phone: only with the Force-0x08 toggle on or `--ez selftest08 true`
                 if (Codec.force08 || intent.getBooleanExtra("selftest08", false)) selfTest08(c)
             }
             runOnUiThread {
@@ -343,26 +313,86 @@ class MainActivity : AppCompatActivity() {
         val aiBtn = findViewById<Button>(R.id.ai)
         aiBtn.setOnClickListener { aiAsk(input) }
         aiShow = { aiBtn.visibility = if (Ai.accounts(this).isEmpty()) android.view.View.GONE else android.view.View.VISIBLE }
-        aiShow()          // opt-in: the compose row shows AI only after an account is added 
+        aiShow()          // opt-in: the compose row shows AI only after an account is added
         send.setOnClickListener {
             val text = input.text.toString(); if (codec == null || text.isBlank()) return@setOnClickListener
             input.setText("")
             val t = toF.text.toString().trim()
-            val dest = if (t.equals("all", true) || t.isEmpty()) MeshBle.BROADCAST else t.removePrefix("!").toLong(16)
+            val dest = if (t.equals("all", true) || t.isEmpty()) MeshBle.BROADCAST
+                else t.removePrefix("!").toLongOrNull(16)?.takeIf { it in 0..0xFFFFFFFFL } ?: run {
+                    say("Not sent: \"$t\" is not a node id (use !hex, like !1a2b3c4d, or all)"); input.setText(text); return@setOnClickListener }
             thread { sendText(dest, text, chF.text.toString().toIntOrNull() ?: 1) }
         }
-        // A reply typed into a message notice goes out the same way, on the channel in the Ch field (10-24)
+        // A reply typed into a message notice goes out the same way, on the channel in the Ch field
         Session.reply = { dest, text, _ -> sendText(dest, text, chF.text.toString().toIntOrNull() ?: 1) }
+        if (hooks && adminReceiver == null) registerAdmin()
+    }
+
+    /** Test hook (TEST_HOOKS builds only): an AdminMessage for this phone's own radio, sent over adb. Guarded by a token
+     *  only `run-as` can write (files/admin_token). Replies land in the log as ADMINRX. Registered once per activity. */
+    private fun registerAdmin() {
+        val r = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context, i: android.content.Intent) {
+                val tok = File(filesDir, "admin_token"); val m = mesh ?: return
+                if (!tok.exists() || i.getStringExtra("key") != tok.readText().trim()) { say("ADMIN refused: bad key"); return }
+                val b = Base64.decode(i.getStringExtra("b64") ?: return, Base64.DEFAULT)
+                thread { m.send(b, m.myNode, 0, 6); say("ADMIN sent ${b.size} B to the radio") }
+            }
+        }
+        registerReceiver(r, android.content.IntentFilter("com.gtc.burst.ADMIN"), RECEIVER_EXPORTED)
+        adminReceiver = r
+    }
+
+    /** One packet from the radio, on the decode worker (Session.decode). */
+    private fun onData(from: Long, to: Long, ch: Int, port: Int, payload: ByteArray) {
+        val app = applicationContext
+        if (port == 6) BurstLog.content("burst", "ADMINRX " + Base64.encodeToString(payload, Base64.NO_WRAP))
+        if (port != 256) return
+        val c = codec
+        if (payload.size == 1 && payload[0] == 0x09.toByte()) {               // TYPING: the peer's mind is on it now
+            Session.typingFrom("!%08x".format(from)); Chat.onChange?.invoke("!%08x".format(from)); return
+        }
+        if (payload.isNotEmpty() && payload[0] != 0x06.toByte()) Session.typingDone("!%08x".format(from))
+        if (payload.size >= 3 && payload[0] == 0x06.toByte()) {               // they refused a frame of mine
+            if (to != MeshBle.BROADCAST) thread { answerAsk(from, ch, payload) }
+            return
+        }
+        if (c != null && payload.isNotEmpty() && payload[0] == 0x12.toByte()) {
+            val a = asm ?: Chain.Assembler(c).also { asm = it }
+            val hist = History.of(app, from)
+            val whole = runCatching { a.add(from, payload, hist.candidates()) }.getOrElse { say("link undecodable: ${it.message}"); null }
+            if (whole == null) { say("RX !%08x link %s".format(from, a.progress(from, payload))); return }
+            if (whole.verified08) hist.markReads08()                 // it reads the det codec: I may send 0x08 to it
+            if (whole.allVerified) hist.add(whole.text)
+            say("RX !%08x (%d packets%s): %s".format(from, whole.total, if (whole.verified08) ", 0x08" else "", whole.text), content = true)
+            if (whole.allVerified) BurstService.notify(app, "!%08x".format(from), whole.text)
+            return
+        }
+        val hist = History.of(app, from)
+        val cb = payload.firstOrNull()?.toInt() ?: -1
+        val text = if (c != null && payload.size > 3 && (cb == 0x03 || cb == 0x00 || cb == 0x08))
+            runCatching { c.uncrunch(payload, hist.candidates()).let {
+                if (it.verified) {
+                    hist.add(it.text)
+                    BurstService.notify(app, "!%08x".format(from), it.text)
+                    if (it.codec == 8) hist.markReads08()
+                    "${it.text}  [${if (it.codec == 8) "0x08, history ${it.tail?.size ?: 0}" else "history ${if (cb == 0x03) payload[5].toInt() and 0xFF else 0}"}]"
+                } else if (it.codec == 8) { askFor(from, ch, payload); "(REFUSED 0x08 — ${it.reason}; asked for a resend)" }
+                else "(UNVERIFIED — check failed) " + it.text } }
+                .getOrElse { "<undecodable: ${it.message}>" }
+            else "<${payload.size} bytes, not a burst>"
+        say("RX !%08x ch%d (%d B): %s".format(from, ch, payload.size, text), content = true)
+        BurstLog.content("burst", "RXWIRE " + Base64.encodeToString(payload, Base64.NO_WRAP))
     }
 
     /** Split on our shared history, send link by link, and on delivery add it to that history. True = delivered. */
     private fun sendText(dest: Long, text: String, ch: Int): Boolean {
         val c = codec ?: return false
-        val hist = if (dest == MeshBle.BROADCAST) null else History(applicationContext, dest)   // broadcasts have no one shared history
-        val use08 = Codec.force08 || (hist?.reads08() == true)                    // box rule: 0x08 only once the peer has shown it reads it
+        val hist = if (dest == MeshBle.BROADCAST) null else History.of(applicationContext, dest)   // broadcasts have no one shared history
+        val use08 = Codec.force08 || (hist?.reads08() == true)                    // 0x08 only once the peer has shown it reads it
         val label = if (dest == MeshBle.BROADCAST) "all" else "!%08x".format(dest)
-        // The bubble goes up the moment he taps Send, and every stage shows on it — his 10-24: "it is not clear if it
-        // went or if it is working". Nothing fails into the debug log alone any more.
+        // The bubble goes up the moment Send is tapped, and every stage shows on it, so the user can see whether it
+        // went and whether it is working. Nothing fails into the debug log alone.
         val line = if (dest == MeshBle.BROADCAST) null else Chat.add(applicationContext, label, true, text, "packing…")
         fun mark(s: String) { line?.let { Chat.mark(applicationContext, label, it, s) } }
         val queue = ArrayDeque(Chain.parts(text)); var done = 0
@@ -390,7 +420,8 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
-    /** The box's golden vectors: phone decodes the box's bytes, and the box's decoder must accept the phone's bytes. */
+    /** Golden vectors from the reference encoder: the phone must decode the reference bytes, and its own encode must
+     *  round-trip (and is compared byte for byte with the reference). */
     private fun selfTest(c: Codec) {
         val vec = JSONArray(assets.open("vectors.json").bufferedReader().readText())
         var tokOk = 0; var decOk = 0; var rtOk = 0; var sameBytes = 0
@@ -399,19 +430,19 @@ class MainActivity : AppCompatActivity() {
             val v = vec.getJSONObject(i); val text = v.getString("text")
             val want = v.getJSONArray("tokens").let { a -> IntArray(a.length()) { a.getInt(it) } }
             if (BurstNative.tokenize(text.toByteArray()).contentEquals(want)) tokOk++  // golden vectors are the raw open-codec wire
-            val boxBytes = Base64.decode(v.getString("wire_b64"), Base64.NO_WRAP)
-            val d = c.uncrunchRaw(boxBytes); if (d.text == text) decOk++ else say("box->phone MISS [$i]: ${d.text}")
+            val refBytes = Base64.decode(v.getString("wire_b64"), Base64.NO_WRAP)
+            val d = c.uncrunchRaw(refBytes); if (d.text == text) decOk++ else say("ref->phone MISS [$i]: ${d.text}", content = true)
             val mine = c.crunchRaw(text)
-            if (mine.contentEquals(boxBytes)) sameBytes++
+            if (mine.contentEquals(refBytes)) sameBytes++
             if (c.uncrunchRaw(mine).text == text) rtOk++
             phoneWire.put(Base64.encodeToString(mine, Base64.NO_WRAP))
         }
-        say("SELFTEST tokens $tokOk/${vec.length()} · box->phone exact $decOk/${vec.length()} · phone round trip $rtOk/${vec.length()} · identical bytes $sameBytes/${vec.length()}")
-        Log.i("burst", "PHONEWIRE " + phoneWire.toString())
+        say("SELFTEST tokens $tokOk/${vec.length()} · ref->phone exact $decOk/${vec.length()} · phone round trip $rtOk/${vec.length()} · identical bytes $sameBytes/${vec.length()}")
+        BurstLog.content("burst", "PHONEWIRE " + phoneWire.toString())
     }
 
-    /** Frame 0x08 (det): the box's det_codec.py frames must decode EXACT through History.candidates (the check picks the
-     *  history), the phone's encode must be byte-IDENTICAL to the box's, and a flipped coder byte must be REFUSED. */
+    /** Frame 0x08 (det): reference-encoder frames must decode EXACT through History.candidates (the check picks the
+     *  history), the phone's encode must be byte-IDENTICAL to the reference, and a flipped coder byte must be REFUSED. */
     private fun selfTest08(c: Codec) {
         val vec = JSONArray(assets.open("vectors08.json").bufferedReader().readText())
         var decOk = 0; var same = 0; var refused = 0; var negTried = 0; var tailOk = 0
@@ -420,18 +451,18 @@ class MainActivity : AppCompatActivity() {
             val v = vec.getJSONObject(i); val text = v.getString("text")
             val history = v.getJSONArray("history").let { a -> List(a.length()) { a.getString(it) } }
             val tail = v.getJSONArray("tail").let { a -> List(a.length()) { a.getString(it) } }
-            val box = Base64.decode(v.getString("frame_b64"), Base64.NO_WRAP)
-            val d = c.uncrunch(box, History.candidates(history))
-            if (d.verified && d.text == text) { decOk++; if (d.tail == tail) tailOk++ } else say("0x08 box->phone MISS [$i]: ${d.reason ?: d.text}")
+            val ref = Base64.decode(v.getString("frame_b64"), Base64.NO_WRAP)
+            val d = c.uncrunch(ref, History.candidates(history))
+            if (d.verified && d.text == text) { decOk++; if (d.tail == tail) tailOk++ } else say("0x08 ref->phone MISS [$i]: ${d.reason ?: d.text}", content = true)
             val mine = c.crunch08(text, tail)
-            if (mine != null && mine.contentEquals(box)) same++ else say("0x08 bytes DIFFER [$i]: ${mine?.size ?: -1} B vs box ${box.size} B ${BurstNative.detLastReason()}")
-            if (i < 2 && box.size > 6) {                            // negative (2 of them: each refusal tries every candidate)
+            if (mine != null && mine.contentEquals(ref)) same++ else say("0x08 bytes DIFFER [$i]: ${mine?.size ?: -1} B vs ref ${ref.size} B ${BurstNative.detLastReason()}")
+            if (i < 2 && ref.size > 6) {                            // negative (2 of them: each refusal tries every candidate)
                 negTried++
-                val bad = box.copyOf(); val fi = 4 + (box.size - 4) / 2; bad[fi] = (bad[fi].toInt() xor 0x5A).toByte()
+                val bad = ref.copyOf(); val fi = 4 + (ref.size - 4) / 2; bad[fi] = (bad[fi].toInt() xor 0x5A).toByte()
                 val n = c.uncrunch(bad, History.candidates(history))
                 if (!n.verified) refused++ else say("0x08 flipped byte NOT refused [$i]: ${n.text}")
             }
         }
-        say("SELFTEST08 box->phone exact $decOk/${vec.length()} (history picked ${tailOk}) · identical bytes $same/${vec.length()} · flipped refused $refused/$negTried · ${System.currentTimeMillis() - t0} ms · detlm ${BurstNative.detVersion()} peak ${BurstNative.detPeakRssKib() / 1024} MiB")
+        say("SELFTEST08 ref->phone exact $decOk/${vec.length()} (history picked ${tailOk}) · identical bytes $same/${vec.length()} · flipped refused $refused/$negTried · ${System.currentTimeMillis() - t0} ms · detlm ${BurstNative.detVersion()} peak ${BurstNative.detPeakRssKib() / 1024} MiB")
     }
 }

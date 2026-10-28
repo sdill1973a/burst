@@ -1,5 +1,5 @@
 /* detlm — deterministic scalar inference engine for ONE model:
- * Qwen2.5-0.5B-Instruct q8_0 (GGUF). Token ids in, float32 logits out.
+ * Qwen2.5-0.5B q8_0 (GGUF), base or instruct (same geometry). Token ids in, float32 logits out.
  *
  * Contract: for the same token stream (same tokens, same batch split or not),
  * the logits are BIT-IDENTICAL on every platform this is built for, provided the

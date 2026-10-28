@@ -31,6 +31,7 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
         val FROMNUM: UUID = UUID.fromString("ed9da18c-a800-4f66-a670-aa7547e34453")
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         const val BROADCAST = 0xFFFFFFFFL
+        private const val OP_TIMEOUT_S = 15L
         /** Peer names as the mesh announces them (NodeInfo.user.long_name), "!hex" -> name. Nothing hard-coded. */
         val names = java.util.concurrent.ConcurrentHashMap<String, String>()
         fun name(id: String): String = names[id] ?: id
@@ -102,8 +103,12 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
             val s = g.getService(SERVICE) ?: run { say("Not a Meshtastic radio (no service)"); return }
             toR = s.getCharacteristic(TORADIO); fromR = s.getCharacteristic(FROMRADIO)
             val num = s.getCharacteristic(FROMNUM)
+            val cccd = num?.getDescriptor(CCCD)
+            if (toR == null || fromR == null || num == null || cccd == null) {
+                say("Not a Meshtastic radio (a required characteristic is missing)"); return
+            }
             g.setCharacteristicNotification(num, true)
-            val rc = g.writeDescriptor(num.getDescriptor(CCCD), BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+            val rc = g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
             say("cccd write rc=$rc")
         }
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
@@ -124,19 +129,25 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
         }
     }
 
+    /** Wait for the GATT callback of the op in flight; null = the radio stopped answering. */
+    private fun awaitOp(): ByteArray? = done.poll(OP_TIMEOUT_S, java.util.concurrent.TimeUnit.SECONDS)
+        ?: null.also { say("Radio stopped answering (no GATT callback in $OP_TIMEOUT_S s)") }
+
     private fun pump() {
         val g = gatt ?: return                                          // one pump per connection: it ends when its gatt does
+        val tr = toR ?: return; val fr = fromR ?: return
         while (gatt === g) {
             val op = ops.poll(1, java.util.concurrent.TimeUnit.SECONDS) ?: continue
             if (gatt !== g) { ops.put(op); return }
             when (op) {
-                is Op.W -> { g.writeCharacteristic(toR!!, op.b, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT); done.take() }
+                is Op.W -> { g.writeCharacteristic(tr, op.b, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT); awaitOp() }
                 is Op.R -> {                                   // drain: read until the radio returns an empty value
                     while (true) {
-                        if (!g.readCharacteristic(fromR!!)) break
-                        val v = done.take()
+                        if (!g.readCharacteristic(fr)) break
+                        val v = awaitOp() ?: break
                         if (v.isEmpty()) break
-                        handleFromRadio(v)
+                        // A malformed or hostile packet is dropped; it must never take the process down.
+                        try { handleFromRadio(v) } catch (e: Exception) { say("Dropped a malformed packet (${e.javaClass.simpleName})") }
                     }
                 }
             }
@@ -150,11 +161,8 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
 
     private fun handleFromRadio(b: ByteArray) {
         val f = Pb.parse(b)
-        f[3]?.let { my -> Pb.parse(my as ByteArray)[1]?.let { myNode = it as Long; say("Radio node !%08x".format(myNode)) } }
-        for (k in intArrayOf(5, 9, 10)) (f[k] as? ByteArray)?.let {   // the radio's own config as it dumps it on connect (admin reads)
-            android.util.Log.i("burst", "CFG$k " + android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP))
-        }
-        f[4]?.let { ni -> Pb.parse(ni as ByteArray).let { n -> nodeName(n[1] as? Long, n[2] as? ByteArray) } }   // node list
+        (f[3] as? ByteArray)?.let { my -> (Pb.parse(my)[1] as? Long)?.let { myNode = it; say("Radio node !%08x".format(myNode)) } }
+        (f[4] as? ByteArray)?.let { ni -> Pb.parse(ni).let { n -> nodeName(n[1] as? Long, n[2] as? ByteArray) } }   // node list
         f[7]?.let { if (!ready) { ready = true; say("Radio ready") } }
         if (!ready) return
         val pkt = (f[2] as? ByteArray)?.let { Pb.parse(it) } ?: return
@@ -169,7 +177,8 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
         onData(pkt[1] as? Long ?: 0L, pkt[2] as? Long ?: 0L, (pkt[3] as? Long ?: 0L).toInt(), port, dec[2] as? ByteArray ?: ByteArray(0))
     }
 
-    /** Minimal protobuf writer/reader: varint, fixed32, length-delimited. Reader keeps the LAST value per field. */
+    /** Minimal protobuf writer/reader: varint, fixed32, length-delimited. Reader keeps the LAST value per field.
+     *  The reader takes peer-supplied bytes: any truncated or out-of-range field throws [Malformed]. */
     class Pb {
         private val o = ByteArrayOutputStream()
         private fun v(x: Long) { var n = x; while (n and 0x7FL.inv() != 0L) { o.write(((n and 0x7F) or 0x80).toInt()); n = n ushr 7 }; o.write(n.toInt()) }
@@ -179,16 +188,27 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
         fun out(): ByteArray = o.toByteArray()
 
         companion object {
+            class Malformed(msg: String) : RuntimeException(msg)
+
             fun parse(b: ByteArray): Map<Int, Any> {
                 val m = HashMap<Int, Any>(); var i = 0
-                fun rv(): Long { var r = 0L; var s = 0; while (true) { val c = b[i++].toInt() and 0xFF; r = r or ((c and 0x7F).toLong() shl s); if (c < 0x80) return r; s += 7 } }
+                fun need(n: Long) { if (n < 0 || n > b.size - i) throw Malformed("field runs past the end") }
+                fun rv(): Long {
+                    var r = 0L; var s = 0
+                    while (true) {
+                        if (i >= b.size) throw Malformed("truncated varint")
+                        if (s > 63) throw Malformed("varint too long")
+                        val c = b[i++].toInt() and 0xFF; r = r or ((c and 0x7F).toLong() shl s)
+                        if (c < 0x80) return r; s += 7
+                    }
+                }
                 while (i < b.size) {
                     val tag = rv(); val f = (tag ushr 3).toInt()
                     when ((tag and 7).toInt()) {
                         0 -> m[f] = rv()
-                        1 -> { i += 8 }
-                        2 -> { val n = rv().toInt(); m[f] = b.copyOfRange(i, i + n); i += n }
-                        5 -> { var x = 0L; for (k in 0 until 4) x = x or ((b[i + k].toLong() and 0xFF) shl (8 * k)); m[f] = x; i += 4 }
+                        1 -> { need(8); i += 8 }
+                        2 -> { val n = rv(); need(n); m[f] = b.copyOfRange(i, i + n.toInt()); i += n.toInt() }
+                        5 -> { need(4); var x = 0L; for (k in 0 until 4) x = x or ((b[i + k].toLong() and 0xFF) shl (8 * k)); m[f] = x; i += 4 }
                         else -> return m
                     }
                 }

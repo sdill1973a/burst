@@ -1,8 +1,9 @@
-// burst_jni — the smallest bridge the open codec needs: load a GGUF, tokenize/detokenize exactly as the box's
-// llama-cpp-python does (no BOS, no special parsing), and return next-token logits for chosen positions.
+// burst_jni — the smallest bridge the open codec needs: load a GGUF, tokenize/detokenize exactly as the
+// reference encoder's llama-cpp-python does (no BOS, no special parsing), and return next-token logits for chosen positions.
 // The coder itself (MRC) lives in Kotlin; this file only runs the model.
 #include <jni.h>
 #include <android/log.h>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "llama.h"
@@ -14,6 +15,7 @@
 static llama_model *g_model = nullptr;
 static llama_context *g_ctx = nullptr;
 static int g_pos = 0;          // tokens already in the KV cache
+static std::mutex g_ctx_mu;    // guards g_model/g_ctx/g_pos across load, reset and eval
 
 static const llama_vocab *vocab() { return llama_model_get_vocab(g_model); }
 
@@ -27,6 +29,7 @@ Java_com_gtc_burst_BurstNative_init(JNIEnv *env, jobject, jstring libDir) {
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_gtc_burst_BurstNative_load(JNIEnv *env, jobject, jstring path, jint nThreads) {
+    std::lock_guard<std::mutex> lk(g_ctx_mu);
     const char *p = env->GetStringUTFChars(path, nullptr);
     llama_model_params mp = llama_model_default_params();
     g_model = llama_model_load_from_file(p, mp);
@@ -74,6 +77,7 @@ Java_com_gtc_burst_BurstNative_detokenize(JNIEnv *env, jobject, jintArray toks) 
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_gtc_burst_BurstNative_reset(JNIEnv *, jobject) {
+    std::lock_guard<std::mutex> lk(g_ctx_mu);
     llama_memory_clear(llama_get_memory(g_ctx), true);
     g_pos = 0;
 }
@@ -82,6 +86,7 @@ Java_com_gtc_burst_BurstNative_reset(JNIEnv *, jobject) {
 // (index into this call's tokens). Empty array on failure.
 extern "C" JNIEXPORT jfloatArray JNICALL
 Java_com_gtc_burst_BurstNative_eval(JNIEnv *env, jobject, jintArray toks, jint fromIdx) {
+    std::lock_guard<std::mutex> lk(g_ctx_mu);
     jsize n = env->GetArrayLength(toks);
     std::vector<jint> t(n);
     env->GetIntArrayRegion(toks, 0, n, t.data());
@@ -113,9 +118,8 @@ Java_com_gtc_burst_BurstNative_eval(JNIEnv *env, jobject, jintArray toks, jint f
 // ---------------------------------------------------------------------------------------------------------------
 // det — frame 0x08: detlm (bit-identical logits, parses the same GGUF itself) + detrc (exact range coder).
 // One resident engine, loaded lazily by Kotlin (Det.kt) and released when idle; a mutex serialises every call.
-// The tokenizer stays llama.cpp's above (same vocab as the box).
+// The tokenizer stays llama.cpp's above (same vocab as the reference encoder).
 // ---------------------------------------------------------------------------------------------------------------
-#include <mutex>
 #include "det/detlm.h"
 #include "det/det08.h"
 

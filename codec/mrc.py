@@ -51,8 +51,8 @@ class MRC:
         return bits
 
     def decode_token(self, probs, stream, pos, strict=False, force=None):
-        """One token back, plus HOW SURE: the decoder owns its guess ("make the codec own its guesses and
-        mark them as sus"). Returns (x, pos, sus) where sus is None for a clean read or a dict naming the doubt:
+        """One token back, plus HOW SURE: the decoder owns its guess and marks it as sus. Returns (x, pos, sus) where
+        sus is None for a clean read or a dict naming the doubt:
           empty : no candidate in the c-window (mismatch beyond the certified factor) — strict=True raises instead;
                   otherwise the window is widened and the best code match taken, flagged
           tie   : two candidates match the stream equally far — the pick is the likelier one, flagged

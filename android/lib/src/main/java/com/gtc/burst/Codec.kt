@@ -7,13 +7,13 @@ import kotlin.math.exp
 import kotlin.math.roundToInt
 
 /**
- * The open codec, same wire as codec/open_codec.py:
+ * The open codec (same wire as the reference encoder):
  *   [0x03][model id][c×10][tail id][varint n_tokens][MRC bits]
- * Shared history (10-23, his perpetual exchange): the prime can carry the last TAIL_N confirmed messages of the
- * conversation; header byte 3 = tail id (sha256 of the joined tail, low byte |1; 0 = base prime), as open_codec.py.
+ * Shared history: the prime can carry the last TAIL_N confirmed messages of the
+ * conversation; header byte 3 = tail id (sha256 of the joined tail, low byte |1; 0 = base prime), as the reference encoder computes it.
  *
- * Frame 0x08 (10-24, codec/): the deterministic codec — detlm computes the SAME logits bit for
- * bit on the phone and the box, so a plain range coder replaces the mismatch margin (~2x content per byte):
+ * Frame 0x08: the deterministic codec — detlm computes the SAME logits bit for
+ * bit on the phone and on any other host, so a plain range coder replaces the mismatch margin (~2x content per byte):
  *   [0x08][2-byte check = sha256(text)[:2]][varint n_tokens][range-coder bytes]
  * No model id, no c, no tail id: the receiver tries candidate histories newest-first (cap MAX_TAILS_08) then the base
  * prime, and the check picks; nothing that fails the check is ever shown (refused, not ⟦unverified⟧).
@@ -40,22 +40,24 @@ class Codec(codesBin: ByteArray, tablesJson: String) {
 
     companion object {
         const val TAIL_N = 4
-        const val MAX_TAILS_08 = 6          // candidate histories tried for a 0x08 frame, newest first (box: det_codec.MAX_TAILS)
+        const val MAX_TAILS_08 = 6          // candidate histories tried for a 0x08 frame, newest first (same cap as the reference receiver)
         const val MAX_TOKENS_08 = 2048
-        const val TAIL_BYTES = 1500          // open_codec.TAIL_BYTES
+        const val N_CTX = 4096               // the llama context size; mirrors burst_jni.cpp (cp.n_ctx)
+        const val TAIL_BYTES = 1500          // same cap as the reference encoder
         /** Dev toggle: send 0x08 to everyone regardless of whether the peer has shown it reads it (MainActivity: prefs/intent). */
         @Volatile var force08 = false
         fun tailId(tail: List<String>): Int =
             if (tail.isEmpty()) 0 else (java.security.MessageDigest.getInstance("SHA-256").digest(tail.joinToString("\n").toByteArray())[0].toInt() and 0xFF) or 1
         fun sha2(bytes: ByteArray): ByteArray = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).copyOf(2)
     }
-    /** The learned tail, capped: oldest messages drop until it fits TAIL_BYTES — exactly open_codec.fit_tail (10-24). */
+    /** The learned tail, capped: oldest messages drop until it fits TAIL_BYTES — exactly as the reference encoder fits it. */
     private fun fitTail(tail: List<String>): List<String> {
         var t = tail; while (t.isNotEmpty() && t.sumOf { it.toByteArray().size } > TAIL_BYTES) t = t.drop(1); return t
     }
     private fun primeFor(tail: List<String>) = prime + fitTail(tail).joinToString("") { it.trimEnd('\n') + "\n\n" }
 
-    fun crunchRaw(text: String, c: Double = cDefault, tail: List<String> = emptyList()): ByteArray {
+    // crunchRaw/uncrunchRaw run reset() + eval() sequences on the one shared llama context: one at a time.
+    @Synchronized fun crunchRaw(text: String, c: Double = cDefault, tail: List<String> = emptyList()): ByteArray {
         val pt = BurstNative.tokenize(primeFor(tail).toByteArray())
         val toks = BurstNative.tokenize(text.toByteArray())
         val V = BurstNative.nVocab()
@@ -76,8 +78,8 @@ class Codec(codesBin: ByteArray, tablesJson: String) {
     class Decoded(val text: String, val sus: Int, val verified: Boolean = true, val codec: Int = 0, val reason: String? = null,
                   val tail: List<String>? = null)
 
-    /** burst.py's wire: [codec][2-byte check = sha256(text)[:2]][body]. 0x03 = open codec, 0x08 = det codec, 0x00 = plain
-     *  UTF-8 when that is smaller. The check lets the receiver REFUSE a wrong decode instead of showing it (box, 10-21). */
+    /** The burst wire: [codec][2-byte check = sha256(text)[:2]][body]. 0x03 = open codec, 0x08 = det codec, 0x00 = plain
+     *  UTF-8 when that is smaller. The check lets the receiver REFUSE a wrong decode instead of showing it. */
     private fun check(text: String) = sha2(text.toByteArray())
 
     /** The whole 0x08 frame (its header already carries the check), or null when the text cannot go as 0x08
@@ -95,7 +97,7 @@ class Codec(codesBin: ByteArray, tablesJson: String) {
         val chk = check(text)
         val plain = byteArrayOf(0) + chk + text.toByteArray()
         // A peer that reads 0x08 never gets the inexact 0x03: when 0x08 cannot take this text, it goes plain (exact).
-        // 10-24: two parts of his paste fell back to 0x03 and arrived as UNVERIFIED garbage.
+        // (An inexact 0x03 fallback can arrive UNVERIFIED; plain never does.)
         if (use08) return crunch08(text, tail)?.takeIf { it.size < plain.size } ?: plain
         val packed = crunchRaw(text, c, tail).let { raw -> byteArrayOf(raw[0]) + chk + raw.copyOfRange(1, raw.size) }
         return if (packed.size < plain.size) packed else plain
@@ -124,7 +126,7 @@ class Codec(codesBin: ByteArray, tablesJson: String) {
             val pt = BurstNative.tokenize(primeFor(tail).toByteArray())
             val r = Det.use { BurstNative.detDecode(pt, b) to BurstNative.detLastReason() } ?: return Decoded("", 0, false, 8, "detlm unavailable")
             val ids = r.first
-            if (ids == null) { why = "refused: ${r.second}"; if (why.contains("not a 0x08")) break else continue }   // a too-long prime must not stop the base-prime try (10-24)
+            if (ids == null) { why = "refused: ${r.second}"; if (why.contains("not a 0x08")) break else continue }   // a too-long prime must not stop the base-prime try
             val bytes = BurstNative.detokenize(ids)
             if (sha2(bytes).contentEquals(chk)) return Decoded(String(bytes, Charsets.UTF_8), 0, true, 8, tail = tail)
         }
@@ -132,16 +134,21 @@ class Codec(codesBin: ByteArray, tablesJson: String) {
     }
 
     /** [tails] = candidate histories; the one whose id matches the header is used. No match → base prime, flagged. */
-    fun uncrunchRaw(b: ByteArray, tails: List<List<String>> = emptyList()): Decoded {
-        require(b[0].toInt() == 0x03) { "not an open-codec burst" }
+    @Synchronized fun uncrunchRaw(b: ByteArray, tails: List<List<String>> = emptyList()): Decoded {
+        require(b.size >= 5 && b[0].toInt() == 0x03) { "not an open-codec burst" }
         val c = (b[2].toInt() and 0xFF) / 10.0
         val tid = b[3].toInt() and 0xFF
         val tail = if (tid == 0) emptyList() else tails.firstOrNull { tailId(it) == tid } ?: emptyList()
         var i = 4; var shift = 0; var n = 0
-        while (true) { val x = b[i++].toInt() and 0xFF; n = n or ((x and 0x7F) shl shift); if (x and 0x80 == 0) break; shift += 7 }
+        while (true) {
+            require(i < b.size && shift <= 21) { "bad token count" }
+            val x = b[i++].toInt() and 0xFF; n = n or ((x and 0x7F) shl shift); if (x and 0x80 == 0) break; shift += 7
+        }
         val stream = Mrc.unpack(b, i)
         val V = BurstNative.nVocab()
         val pt = BurstNative.tokenize(primeFor(tail).toByteArray())
+        // The token count comes off the air: refuse one that cannot fit the context beside the prime.
+        require(n >= 0 && pt.size + n <= N_CTX) { "token count $n does not fit the context" }
         BurstNative.reset()
         var row = BurstNative.eval(pt, pt.size - 1)
         val m = mrc(c)

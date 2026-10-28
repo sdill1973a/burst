@@ -3,3 +3,14 @@ local.properties
 **/.cxx/
 **/.gradle/
 *.apk
+*.gguf
+*.jks
+*.keystore
+*.idsig
+*.so
+__pycache__/
+codec/build/
+codec/detlm_x86*
+codec/detlm_arm*
+codec/detcodec_x86
+codec/detcodec_arm

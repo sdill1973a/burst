@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
-"""test_det_codec — proves detrc + frame 0x08 both ways (an organ must be able to fail).
+"""test_det_codec — proves detrc + frame 0x08 both ways (every check here must be able to fail).
 
-    python3 test_det_codec.py            coder units + edge tables + mock round trip over bench_convo.json + refusals
-    python3 test_det_codec.py --llama    also: bytes on air for the last 32 bench messages with llama.cpp as the stand-in
-                                         model (prime = open_codec.prime_for(previous 4)), vs the 912 B baseline, and the
-                                         x86-vs-aarch64 identity gate on REAL logits (detrc_test file ... under qemu)
-Run with services/.venv-burst/bin/python from the runtime (llama_cpp lives there).
+    python3 test_det_codec.py            coder units + edge tables + mock-model round trips + refusals (numpy only:
+                                         no model, no llama.cpp; builds build/libdetrc.so with cc on first run)
+    python3 test_det_codec.py --golden   also: the golden vectors the Android app checks itself against
+                                         (vectors08.json): with the real model, every frame must be re-encoded
+                                         byte-identical, decode exact under its history, and refuse when a byte flips.
+                                         Needs BURST_GGUF, libdetlm.so (make -f Makefile.detlm) and llama-cpp-python.
+                                         Vectors: $BURST_VECTORS, else ../android/app/src/main/assets/vectors08.json.
 """
-import json, os, random, subprocess, sys, time
+import base64, json, os, random, sys, time
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
 import det_codec as dc
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 TOTAL = 1 << dc.TOTAL_BITS
-BENCH = json.load(open(os.path.join(HERE, "bench_convo.json")))
 V = 151936
+VECTORS = os.environ.get("BURST_VECTORS") or os.path.join(HERE, "..", "android", "app", "src", "main", "assets", "vectors08.json")
+
+# a synthetic conversation for the mock model (the mock tokenizes bytes, so any text works): 64 messages, 1-3 phrases each
+PHRASES = ["Checking in.", "How goes it?", "On my way, ETA 20 min.", "Copy that.", "Battery at 40%, heading back.",
+           "Water is up over the low crossing on the creek road.", "Camp is at the second pullout past the bridge.",
+           "Bring ice and the big tarp.", "Did you get my last message?", "Nothing came through on my end.",
+           "Power is out on the east side of town.", "Nobody is hurt.", "Lat 44.4280, lon -110.5885.", "See you Sunday.",
+           "Line one.\n\nLine  two, with a double space.", "Ünïcödé — and an emoji 🙂 too."]
+_r = random.Random(20261024)
+MSGS = [" ".join(_r.choice(PHRASES) for _ in range(_r.randint(1, 3))) for _ in range(64)]
 
 
 def ok(cond, msg):
@@ -105,30 +115,30 @@ def test_coder():
 
 # ----------------------------------------------------------------------------------------------------------- mock e2e
 def test_mock_roundtrip():
-    print("frame 0x08 round trip on the mock model, all %d bench messages, 4-message learned tails:" % len(BENCH))
+    print("frame 0x08 round trip on the mock model, all %d messages, 4-message learned tails:" % len(MSGS))
     m = dc.MockModel(); total = 0; t0 = time.time()
-    for i, text in enumerate(BENCH):
-        tail = BENCH[max(0, i - 4):i]
+    for i, text in enumerate(MSGS):
+        tail = MSGS[max(0, i - 4):i]
         frame = dc.crunch(text, m, tail=tail)
         assert frame[0] == 0x08
         # the receiver holds its own history; offer newest-first candidates, in sync first then one lagging
-        cands = [BENCH[max(0, i - 4):i], BENCH[max(0, i - 5):i - 1] if i else []]
+        cands = [MSGS[max(0, i - 4):i], MSGS[max(0, i - 5):i - 1] if i else []]
         back = dc.uncrunch(frame, m, tails=cands)
         if back != text:
             ok(False, f"message {i} not exact")
         total += len(frame)
-    ok(True, f"{len(BENCH)}/{len(BENCH)} exact, {total} B total, {time.time() - t0:.1f}s")
+    ok(True, f"{len(MSGS)}/{len(MSGS)} exact, {total} B total, {time.time() - t0:.1f}s")
     # the receiver lagging by one (its newest candidate is not the sender's tail) still lands on the right one
-    i = 40; frame = dc.crunch(BENCH[i], m, tail=BENCH[i - 4:i])
-    back = dc.uncrunch(frame, m, tails=[BENCH[i - 3:i + 1], BENCH[i - 4:i], BENCH[i - 5:i - 1]])
-    ok(back == BENCH[i], "receiver one message ahead: second candidate matches")
-    back = dc.uncrunch(dc.crunch(BENCH[i], m, tail=()), m, tails=[BENCH[i - 4:i]])
-    ok(back == BENCH[i], "sender with no history: base prime found as the last candidate")
+    i = 40; frame = dc.crunch(MSGS[i], m, tail=MSGS[i - 4:i])
+    back = dc.uncrunch(frame, m, tails=[MSGS[i - 3:i + 1], MSGS[i - 4:i], MSGS[i - 5:i - 1]])
+    ok(back == MSGS[i], "receiver one message ahead: second candidate matches")
+    back = dc.uncrunch(dc.crunch(MSGS[i], m, tail=()), m, tails=[MSGS[i - 4:i]])
+    ok(back == MSGS[i], "sender with no history: base prime found as the last candidate")
 
 
 def test_refusals():
     print("refusals (never shown as text):")
-    m = dc.MockModel(); i = 50; text = BENCH[i]; tail = BENCH[i - 4:i]
+    m = dc.MockModel(); i = 50; text = MSGS[i]; tail = MSGS[i - 4:i]
     frame = dc.crunch(text, m, tail=tail)
     assert dc.uncrunch(frame, m, tails=[tail]) == text
 
@@ -142,7 +152,7 @@ def test_refusals():
             ok(True, f"{what}: decoded EXACT (the flip stayed inside the final interval — same message, check passes)"); return
         ok(False, f"{what}: was SHOWN as {got!r}")
 
-    body_at = 3 + 1 + (len(frame) > 130)                 # first rc byte (varint is 1 or 2 bytes here)
+    body_at = dc._rv(frame, 3)[1]                         # first rc byte, after the varint token count
     for k in (body_at, body_at + 3, len(frame) // 2):
         f = bytearray(frame); f[k] ^= 0x40; refused(bytes(f), f"body byte {k} flipped")
     f = bytearray(frame); f[-1] ^= 0x40                   # the LAST byte is the loose one: the minimal flush picks any
@@ -153,59 +163,42 @@ def test_refusals():
     refused(frame[:3], "frame cut to the header")
     refused(b"\x08\x00\x00\xff\xff\xff\xff\x7f" + frame[4:], "varint token count 2^35 (over the cap, no model steps)")
     refused(b"\x07" + frame[1:], "wrong codec byte")
-    refused(frame, "only wrong histories offered", tails=[BENCH[i - 5:i - 1], BENCH[i - 6:i - 2], BENCH[i - 3:i + 1]])
+    refused(frame, "only wrong histories offered", tails=[MSGS[i - 5:i - 1], MSGS[i - 6:i - 2], MSGS[i - 3:i + 1]])
     random.seed(5)
     for k in range(3):
         refused(b"\x08" + bytes(random.randrange(256) for _ in range(20)), f"random 23-byte frame #{k}")
 
 
-# -------------------------------------------------------------------------------------------------- llama stand-in
-def bench_llama():
-    print("llama.cpp stand-in: last 32 bench messages, tail = previous 4, encode + decode on this box:")
-    m = dc.LlamaModel()
-    rows, syms = [], []                                     # real logits for the cross-arch gate
-    on_air = ideal_total = 0.0; rc_total = ntok = 0; t0 = time.time(); lines = []
-    for i in range(len(BENCH) - 32, len(BENCH)):
-        text, tail = BENCH[i], BENCH[i - 4:i]
-        frame = dc.crunch(text, m, tail=tail)
-        back = dc.uncrunch(frame, m, tails=[tail, BENCH[i - 5:i - 1]])
-        if back != text:
-            ok(False, f"message {i} not exact under llama stand-in")
-        toks = m.tokenize(text); lg = m.reset(m.tokenize(dc.open_codec.prime_for(tail))); ideal = 0.0
-        for t in toks:
-            ideal += dc.ideal_bits(lg, t)
-            if len(rows) < 48:
-                rows.append(lg.copy()); syms.append(t)
-            lg = m.step(t)
-        on_air += len(frame); rc_total += len(frame) - 3 - (1 if len(toks) < 128 else 2); ideal_total += ideal; ntok += len(toks)
-        lines.append(f"    {i:2d} {len(text):4d} ch {len(toks):3d} tok  frame {len(frame):3d} B  ideal {ideal / 8:6.1f} B  {text[:48]!r}")
-    print("\n".join(lines))
-    print(f"  32 messages, {ntok} tokens: ON AIR {int(on_air)} B (frames incl. 0x08 + 2-byte check + varint) vs 912 B baseline "
-          f"(open codec 0x03 848 + 2 B check each) — {912 / on_air:.2f}x smaller; rc bytes {rc_total} vs float ideal "
-          f"{ideal_total / 8:.1f} B ({rc_total * 8 / ntok:.2f} vs {ideal_total / ntok:.2f} bits/token); {time.time() - t0:.0f}s")
-    ok(on_air < 912, "beats the 912 B baseline")
-    # cross-arch identity on REAL logits: the C harness on x86 and on aarch64 under qemu, same rows, cmp
-    b = os.path.join(HERE, "build"); os.makedirs(b, exist_ok=True)
-    np.stack(rows).astype(np.float32).tofile(os.path.join(b, "real_logits.f32"))
-    np.array(syms, np.uint32).tofile(os.path.join(b, "real_syms.u32"))
-    subprocess.run(["make", "-s", "-C", HERE, "build/detrc_test_x86", "build/detrc_test_aarch64"], check=True)
-    outs = []
-    for tag, cmd in (("x86", [os.path.join(b, "detrc_test_x86")]), ("aarch64", ["/usr/bin/qemu-aarch64", os.path.join(b, "detrc_test_aarch64")])):
-        r = subprocess.run(cmd + ["file", os.path.join(b, "real_logits.f32"), str(V), os.path.join(b, "real_syms.u32"),
-                                  os.path.join(b, f"real_freq_{tag}.bin"), os.path.join(b, f"real_rc_{tag}.bin")],
-                           capture_output=True, text=True, check=True)
-        outs.append(r.stdout.strip()); print(f"    {tag:8s} {r.stdout.strip()}")
-    same = (open(os.path.join(b, "real_freq_x86.bin"), "rb").read() == open(os.path.join(b, "real_freq_aarch64.bin"), "rb").read()
-            and open(os.path.join(b, "real_rc_x86.bin"), "rb").read() == open(os.path.join(b, "real_rc_aarch64.bin"), "rb").read())
-    ok(same and outs[0] == outs[1], f"{len(rows)} real logit rows: freq tables and coded bytes IDENTICAL x86 vs aarch64")
-    # and the Python/ctypes path produces the same bytes as the C harness for those rows
-    e = dc.Encoder()
-    for lg, s in zip(rows, syms): e.put_logits(lg, s)
-    ok(e.finish() == open(os.path.join(b, "real_rc_x86.bin"), "rb").read(), "ctypes path bytes == C harness bytes")
+# ---------------------------------------------------------------------------------------------------- golden vectors
+def test_golden():
+    print(f"golden vectors (real model, detlm): {VECTORS}")
+    if not os.path.exists(VECTORS):
+        ok(False, "vectors08.json not found (set BURST_VECTORS)")
+    vec = json.load(open(VECTORS))
+    m = dc.DetlmModel(); t0 = time.time()
+    for i, v in enumerate(vec):
+        frame = base64.b64decode(v["frame_b64"])
+        ok(m.tokenize(v["text"]) == v["tokens"], f"[{i}] tokenizer ids match")
+        ok(dc.crunch(v["text"], m, tail=v["tail"]) == frame, f"[{i}] re-encoded byte-identical ({len(frame)} B)")
+        h = v["history"]                                   # the receiver's candidates: newest window first, then older ones
+        cands = [h[max(0, len(h) - 4 - k):len(h) - k] for k in range(dc.MAX_TAILS) if len(h) - k > 0]
+        ok(dc.uncrunch(frame, m, tails=cands) == v["text"], f"[{i}] decodes exact, history found by the check")
+        if i < 2:
+            bad = bytearray(frame); bad[4 + (len(frame) - 4) // 2] ^= 0x5A
+            try:
+                dc.uncrunch(bytes(bad), m, tails=cands); ok(False, f"[{i}] flipped byte was SHOWN")
+            except dc.DecodeFailed:
+                ok(True, f"[{i}] flipped byte refused")
+    big = bytes([0x08]) + frame[1:3] + bytes([0xF8, 0x0F]) + frame[4:]      # claims 2,040 tokens: over the context
+    try:
+        dc.uncrunch(big, m, tails=[["x" * 1400]]); ok(False, "over-context token count was SHOWN")
+    except dc.DecodeFailed:
+        ok(True, "a token count that cannot fit the context is refused before decoding")
+    ok(True, f"{len(vec)} vectors, {time.time() - t0:.1f}s, detlm {m.version}")
 
 
 if __name__ == "__main__":
     test_freq_edges(); test_coder(); test_mock_roundtrip(); test_refusals()
-    if "--llama" in sys.argv:
-        bench_llama()
+    if "--golden" in sys.argv:
+        test_golden()
     print("ALL PASSED")

@@ -1,6 +1,6 @@
-/* detlm.c — deterministic scalar inference for Qwen2.5-0.5B-Instruct q8_0 (GGUF).
+/* detlm.c — deterministic scalar inference for Qwen2.5-0.5B q8_0 (GGUF).
  *
- * Determinism rules (see PLAN.md):
+ * Determinism rules:
  *  - float32 activations; every reduction in the fixed order written here;
  *  - build with -O2 -ffp-contract=off -fno-math-errno, never -ffast-math / -Ofast;
  *  - no libm transcendentals: own expf, own double sin/cos (RoPE table), own rounding;
@@ -395,8 +395,10 @@ detlm *detlm_load(const char *path, int n_ctx, int n_threads) {
         m->n_vocab = (int)e->ne[1];
     }
     m->tok_embd = (const uint8_t *)need(ti, (int)n_tensors, data, data_len, "token_embd.weight", 8, (uint64_t)n_embd, (uint64_t)m->n_vocab);
-    m->output = (const uint8_t *)need(ti, (int)n_tensors, data, data_len, "output.weight", 8, (uint64_t)n_embd, (uint64_t)m->n_vocab);
-    if (!m->output && find_tensor(ti, (int)n_tensors, "output.weight") == NULL) m->output = m->tok_embd;   /* tied */
+    /* tied embeddings (Qwen2.5-0.5B): no output.weight in the file, the output head is token_embd */
+    m->output = find_tensor(ti, (int)n_tensors, "output.weight")
+        ? (const uint8_t *)need(ti, (int)n_tensors, data, data_len, "output.weight", 8, (uint64_t)n_embd, (uint64_t)m->n_vocab)
+        : m->tok_embd;
     m->output_norm = (const float *)need(ti, (int)n_tensors, data, data_len, "output_norm.weight", 0, (uint64_t)n_embd, 0);
     if (!m->tok_embd || !m->output || !m->output_norm) goto fail;
     m->layers = (struct layer *)calloc((size_t)n_layer, sizeof *m->layers);
@@ -598,8 +600,6 @@ static int eval_chunk(detlm *m, const int32_t *tokens, int n, int n_logits, floa
         }
     }
     if (m->trace) fprintf(stderr, "trace embd      %016llx\n", (unsigned long long)fnv1a(x, (size_t)n * E * 4, 1469598103934665603ull));
-    FILE *dump = getenv("DETLM_DUMP") ? fopen(getenv("DETLM_DUMP"), "ab") : NULL;
-    if (dump) fwrite(x + (size_t)(n - 1) * E, 4, (size_t)E, dump);
 
     for (int l = 0; l < m->n_layer; l++) {
         const struct layer *L = &m->layers[l];
@@ -657,9 +657,7 @@ static int eval_chunk(detlm *m, const int32_t *tokens, int n, int n_logits, floa
         matmul(m, L->wd, F, E, n, xd, xq, xn);
         for (size_t i = 0; i < (size_t)n * E; i++) x[i] = x[i] + xn[i];
         if (m->trace) fprintf(stderr, "trace layer %2d  %016llx\n", l, (unsigned long long)fnv1a(x, (size_t)n * E * 4, 1469598103934665603ull));
-        if (dump) fwrite(x + (size_t)(n - 1) * E, 4, (size_t)E, dump);
     }
-    if (dump) fclose(dump);
     m->n_pos += n;
     if (n_logits > 0) {
         int t0 = n - n_logits;

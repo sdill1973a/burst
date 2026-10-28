@@ -1,6 +1,6 @@
 /* detcodec — frame 0x08 on the phone: detlm (bit-identical logits) + detrc (exact range coder), no Python, no
  * tokenizer. Token ids come in as text; the 2-byte plaintext check (sha256(text)[:2]) is computed where the text is
- * (the box) and passed in, because this binary never sees text.
+ * (the host side) and passed in, because this binary never sees text.
  *
  *   detcodec MODEL.gguf encode JOB OUT [--threads N] [--ctx N]
  *       JOB line:  <check hex4> | <prime ids...> | <message ids...>

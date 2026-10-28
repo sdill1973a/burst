@@ -5,7 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** The conversation with one peer, both ways, kept across restarts (last 300 lines). The chat screen draws it, the
- *  notification shows its tail. */
+ *  notification shows its tail. The debug log stays separate. */
 object Chat {
     class Line(val mine: Boolean, val text: String, val ts: Long, var status: String)  // status: "" | sending | delivered | not delivered
 

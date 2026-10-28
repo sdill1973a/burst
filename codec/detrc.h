@@ -1,6 +1,6 @@
-/* detrc — exact integer range coder + deterministic logits→frequency function for the burst box.
+/* detrc — exact integer range coder + deterministic logits→frequency function for Burst.
  *
- * Same C on both ends of the radio (x86-64 box, arm64 phone). detrc_freq reads the float32 logits by their BITS
+ * Same C on both ends of the radio (x86-64 desktop, arm64 phone). detrc_freq reads the float32 logits by their BITS
  * and does only integer arithmetic from there, so identical float inputs give identical frequency tables on any
  * chip, whatever the compiler does with floating point. The coder is LZMA-shaped: 56-bit window, byte renormalisation,
  * carry propagated through a cache byte. Build: cc -O2 -ffp-contract=off (no libm is used, so -ffast-math could not

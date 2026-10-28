@@ -3,21 +3,21 @@ package com.gtc.burst
 import kotlin.random.Random
 
 /**
- * Long messages: the same chain wire as codec/burst.py —
+ * Long messages: the same chain wire as the reference encoder —
  *   one link = [0x12][msg id][index<<4 | total-1] + a checked body (0x03…/0x08…/0x00…), up to 16 links,
  * split at sentence then word boundaries; every link keeps its own whitespace, so joining the decoded links gives the
  * text back exactly. A message that fits one packet goes out as a bare burst, as before.
  * (No missing-link request (0x13) on the phone yet: a lost link shows as an incomplete message.)
  */
 object Chain {
-    const val LIMIT = 200            // bytes per packet, same as burst.py
+    const val LIMIT = 200            // bytes per packet, same as the reference encoder
     private const val GUESS = 380    // chars per link to try first (~2.3 chars/byte measured), checked by real crunch
-    private const val ONE_MAX = 2400 // longest text worth trying as one packet (boilerplate ran 11.6 chars/byte, 10-24)
+    private const val ONE_MAX = 2400 // longest text worth trying as one packet (boilerplate measured 11.6 chars/byte)
     const val PART = 4000            // a paste longer than this goes as several messages, each its own chain (≤16 links)
-    const val PARTS: Byte = 0x0B     // [0x0B][paste id][part i, from 1][of n], before each part of a long paste — burst_rx.PARTS
-    const val CARRY: Byte = 0x0A     // a chain link coded 0x08 but primed on carry(tail, previous link) — burst_rx.CARRY
+    const val PARTS: Byte = 0x0B     // [0x0B][paste id][part i, from 1][of n], before each part of a long paste
+    const val CARRY: Byte = 0x0A     // a chain link coded 0x08 but primed on carry(tail, previous link)
 
-    /** Exactly burst_rx.carry: our shared tail plus the previous link's text, last TAIL_N kept. */
+    /** As the reference receiver computes it: our shared tail plus the previous link's text, last TAIL_N kept. */
     fun carry(tail: List<String>, prev: String) = (tail.takeLast(Codec.TAIL_N) + prev).takeLast(Codec.TAIL_N)
 
     /** Cut a long paste into messages of ≤ PART chars at sentence (else word) boundaries; joined they are the text. */
@@ -40,7 +40,7 @@ object Chain {
     /** Returns the packets to send, in order. use08 = this peer reads the deterministic codec (or the dev toggle). */
     fun split(c: Codec, text: String, tail: List<String> = emptyList(), use08: Boolean = Codec.force08): List<ByteArray> {
         // A whole long paste must never go to the model in one piece: past its context the native eval returns nothing
-        // and the old code died on "length=0; index=0" (his paste, 10-24 14:56). One packet never holds more than this.
+        // and a whole-text attempt failed with an empty logits array. One packet never holds more than this.
         val one = if (text.length <= ONE_MAX) runCatching { c.crunch(text, tail = tail, use08 = use08) }.getOrNull() else null
         if (one != null && one.size <= LIMIT) return listOf(one)
         val rough = ArrayList<String>(); var cur = ""
@@ -57,12 +57,12 @@ object Chain {
             val t = prev?.let { carry(tail, it) } ?: tail
             val b = runCatching { c.crunch(piece, tail = t, use08 = use08) }.getOrNull()
             if (b != null && b.size + 3 <= LIMIT) {
-                if (prev != null && b[0] == 0x08.toByte()) b[0] = CARRY  // 0x0A: decode me after the link before (10-24)
+                if (prev != null && b[0] == 0x08.toByte()) b[0] = CARRY  // 0x0A: decode me after the link before
                 bodies.add(b); prev = piece; return
             }
             val w = words(piece)
             if (w.size > 1) { fit(w.subList(0, w.size / 2).joinToString("")); fit(w.subList(w.size / 2, w.size).joinToString("")); return }
-            // one run with no spaces (a table line, a path): cut it by characters, never mid surrogate pair (10-24)
+            // one run with no spaces (a table line, a path): cut it by characters, never mid surrogate pair
             require(piece.length > 1) { "one character will not fit a packet" }
             var cut = piece.length / 2; if (Character.isHighSurrogate(piece[cut - 1])) cut++
             fit(piece.substring(0, cut)); fit(piece.substring(cut))

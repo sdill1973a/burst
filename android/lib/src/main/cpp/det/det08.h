@@ -2,10 +2,10 @@
  *
  *   frame = [0x08][2-byte check = sha256(text)[:2]][varint n_tokens][range-coder bytes]
  *
- * The SAME call pattern as det/det_codec.py and det/detcodec.c on the box: the prime is evaluated as ONE batch
+ * The SAME call pattern as the reference det_codec/detcodec: the prime is evaluated as ONE batch
  * (logits of its last token), then every message token one at a time. Text never enters here: the check is computed
  * where the text is (Kotlin) and passed in; the caller tries candidate primes and lets the check pick.
- * Build with -O2 -ffp-contract=off, never -ffast-math (the engine next door depends on it; this file has no float math).
+ * Build with -O2 -ffp-contract=off, never -ffast-math (the detlm engine depends on it; this file has no float math).
  */
 #ifndef DET08_H
 #define DET08_H

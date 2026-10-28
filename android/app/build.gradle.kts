@@ -21,7 +21,11 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+        // Test hooks (intent extras that drive the radio, the admin broadcast): off unless -PburstTestHooks=true.
+        buildConfigField("boolean", "TEST_HOOKS",
+            ((project.findProperty("burstTestHooks") as String?) == "true").toString())
     }
+    buildFeatures { buildConfig = true }
 
     buildTypes {
         debug {

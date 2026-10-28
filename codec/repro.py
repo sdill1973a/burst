@@ -4,11 +4,11 @@
     python repro.py paste  FILE [--chapter 1] [--chars N]   # one long paste, chained exactly as on air
     python repro.py lines  FILE [--sms-seed 20261024 --n 200] # many short messages, each alone (no history)
 
-paste: the text is split exactly as the phone's Send does (burst-android Chain.parts + Chain.split, which sent the
-7.7x paste): parts of at most 4,000 chars; in each, rough links of ~380 chars at sentence then word boundaries, each
-crunched for real and halved at a word boundary until it fits LIMIT bytes. Link 0 of a part is primed on no history; every later link is a CARRY (0x0A) link — the same
-0x08 frame, primed on the previous link's text. Each link rides in a chain header [0x12][msg id][i<<4 | n-1]. The
-msg id is random on air; here it is fixed at 0x00 so two runs give the same bytes (it does not change any length).
+paste: the text is split exactly as the Android app's Send does (Chain.parts + Chain.split): parts of at most 4,000
+chars; in each, rough links of ~380 chars at sentence then word boundaries, each crunched for real and halved at a word
+boundary until it fits LIMIT bytes. Link 0 of a part is primed on no history; every later link is a CARRY (0x0A) link —
+the same 0x08 frame, primed on the previous link's text. Each link rides in a chain header [0x12][msg id][i<<4 | n-1].
+The msg id is random on air; here it is fixed at 0x00 so two runs give the same bytes (it does not change any length).
 
 Counted: every byte of every frame, chain headers included (what the radio carries as Burst payload; the mesh's own
 packet header is not counted). Every link is decoded back and must equal its text exactly, or the run fails.
@@ -17,17 +17,15 @@ lines: one message per line, each its own 0x08 frame primed on nothing. --sms-se
 Collection (tab-separated label/text): ham only, shuffled with random.Random(seed), messages under 20 chars dropped,
 first --n kept.
 
-Model: qwen2.5-0.5b-base-q8_0.gguf (sha256 d5163baa48d1797b...), set BURST_GGUF to its path. Engine: detlm
-(libdetlm.so, `make -f Makefile.detlm`), bit-identical across machines, so the frame sha256 should match anywhere.
+Model: qwen2.5-0.5b-base-q8_0.gguf (sha256 d5163baa48d1797b1d274f271aa1fd152e3f07248011f7ea386f3d0667dce535), set
+BURST_GGUF to its path. Engine: detlm (libdetlm.so, `make -f Makefile.detlm`), bit-identical across machines, so the frame sha256 should match anywhere.
 """
 import argparse, hashlib, os, random, re, sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import det_codec as dc
+import det_codec as dc                  # finds open_codec beside it, or one directory up in the source tree
 import open_codec as oc
 
-LIMIT = 200         # bytes per radio payload, as burst_rx.LIMIT / the phone's part size
+LIMIT = 200         # bytes per radio payload (the app's part size)
 CHAIN = 0x12        # [0x12][msg id][i<<4 | n-1] + frame
 CARRY = 0x0A        # a link coded as 0x08 but primed on carry(tail, previous link's text)
 MSG_ID = 0x00       # random on air; fixed here for byte-identical reruns
@@ -72,7 +70,7 @@ def parts(text, size=PART):
 
 
 def chain(text, m, tail=()):
-    """Chain.split (the phone, which sent the 7.7x paste): rough links of ~GUESS chars at sentence then word
+    """Chain.split (the Android app): rough links of ~GUESS chars at sentence then word
     boundaries; each crunched for real, halved at a word boundary until it fits; links after the first are CARRY."""
     one = crunch_or_none(text, m, tail) if len(text) <= ONE_MAX else None
     if one is not None and len(one) <= LIMIT:
@@ -168,7 +166,7 @@ def main():
     ap.add_argument("--sms-seed", type=int, help="file is the UCI SMS Spam Collection: ham, seeded shuffle")
     ap.add_argument("--start", help="begin at the first occurrence of this phrase (unambiguous; --chapter can hit a contents line)")
     ap.add_argument("--flow", action="store_true",
-                    help="join the book's hard line breaks into flowing text, as a person pastes it (10-27 on-air test)")
+                    help="join the book's hard line breaks into flowing text, as a person pastes it")
     ap.add_argument("--n", type=int, default=200)
     ap.add_argument("--threads", type=int, default=4)
     a = ap.parse_args()

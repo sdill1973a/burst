@@ -1,11 +1,17 @@
-# det/Makefile — detrc: the shared library for Python (x86 host) and the cross-arch harness (x86 + aarch64 under qemu)
+# Makefile — detrc: the shared library for Python (host) and the cross-arch harness (host + aarch64 under qemu).
+#   make            host only: build/libdetrc.so, build/detrc_test_x86, build/detrc_ctl_x86
+#   make arm        aarch64 harness builds (needs the Android NDK: ANDROID_HOME, NDK_VERSION as in android/lib/build.gradle.kts)
+#   make identity   host vs aarch64 (qemu-aarch64) identity gate, with its negative controls
 CFLAGS   ?= -O2 -ffp-contract=off -Wall -Wextra -std=c99
-NDK      ?= $(ANDROID_HOME)/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin
+NDK_VERSION ?= 29.0.13113456
+NDK      ?= $(ANDROID_HOME)/ndk/$(NDK_VERSION)/toolchains/llvm/prebuilt/linux-x86_64/bin
 ARMCC    ?= $(NDK)/aarch64-linux-android31-clang
 QEMU     ?= /usr/bin/qemu-aarch64
 B        ?= build
 
-all: $(B)/libdetrc.so $(B)/detrc_test_x86 $(B)/detrc_test_aarch64 $(B)/detrc_ctl_x86 $(B)/detrc_ctl_aarch64
+all: $(B)/libdetrc.so $(B)/detrc_test_x86 $(B)/detrc_ctl_x86
+
+arm: $(B)/detrc_test_aarch64 $(B)/detrc_ctl_aarch64
 
 $(B):
 	mkdir -p $(B)
@@ -45,4 +51,4 @@ identity: $(B)/detrc_test_x86 $(B)/detrc_test_aarch64 $(B)/detrc_ctl_x86 $(B)/de
 clean:
 	rm -rf $(B)
 
-.PHONY: all identity clean
+.PHONY: all arm identity clean

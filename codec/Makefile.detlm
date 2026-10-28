@@ -1,12 +1,19 @@
-# detlm builds (use: make -f Makefile.detlm <target>). Determinism flags are load-bearing: -ffp-contract=off
+# detlm builds (use: make -f Makefile.detlm <target>).
+#   all (default): host only — detlm_x86 (CLI), libdetlm.so (for det_codec.py), detcodec_x86
+#   arm:           static aarch64 builds via the Android NDK (ANDROID_HOME, NDK_VERSION as in android/lib/build.gradle.kts)
+#   detlm_x86_reorder / detlm_x86_fma / detlm_arm_fma: negative controls;  check-fma: count fused ops in the builds
+# Determinism flags are load-bearing: -ffp-contract=off
 # (gcc and NDK clang both default to contraction), never -ffast-math / -Ofast (crtfastmath flips FTZ/DAZ), no -march=native.
 CC      ?= gcc
-NDK     ?= $(ANDROID_HOME)/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin
+NDK_VERSION ?= 29.0.13113456
+NDK     ?= $(ANDROID_HOME)/ndk/$(NDK_VERSION)/toolchains/llvm/prebuilt/linux-x86_64/bin
 ARMCC   ?= $(NDK)/aarch64-linux-android31-clang
 DETFLAGS = -O2 -ffp-contract=off -fno-math-errno -fno-trapping-math -Wall -Wextra -std=c11
 SRC      = detlm.c detlm_cli.c
 
-all: detlm_x86 detlm_arm libdetlm.so detcodec_x86 detcodec_arm
+all: detlm_x86 libdetlm.so detcodec_x86
+
+arm: detlm_arm detcodec_arm
 
 detlm_x86: $(SRC) detlm.h
 	$(CC) $(DETFLAGS) -o $@ $(SRC) -lpthread -lm
@@ -47,3 +54,5 @@ check-fma: detlm_x86 detlm_arm detlm_arm_fma
 
 clean:
 	rm -f detlm_x86 detlm_x86_reorder detlm_x86_fma detlm_arm detlm_arm_fma libdetlm.so detcodec_x86 detcodec_arm
+
+.PHONY: all arm check-fma clean

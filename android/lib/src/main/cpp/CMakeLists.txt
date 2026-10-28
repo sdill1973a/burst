@@ -33,8 +33,8 @@ endif()
 set(LLAMA_SRC ${CMAKE_CURRENT_LIST_DIR}/../../../../../llama.cpp)
 add_subdirectory(${LLAMA_SRC} build-llama)
 
-# det — frame 0x08: bit-identical model (detlm) + exact range coder (detrc), copied from codec/
-# (commit 4a1985f/18f1809, proven byte-identical S25 vs box). Determinism flags are LOAD-BEARING and per-source:
+# det — frame 0x08: bit-identical model (detlm) + exact range coder (detrc), the same sources as the
+# reference implementation (proven byte-identical between arm64 phone and x86-64 desktop). Determinism flags are LOAD-BEARING and per-source:
 # -O2 -ffp-contract=off (the Android Release default is -O3 and clang contracts mul+add into fmla by default),
 # never -ffast-math/-Ofast. Verify in the build's compile_commands.json and by counting fused ops in libai-chat.so.
 set(DET_SRC det/detlm.c det/detrc.c det/det08.c)

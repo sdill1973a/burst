@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Chat first (10-24): header with the radio as a status dot, bubbles, a compose row.
+<!-- Chat first: header with the radio as a status dot, bubbles, a compose row.
      The old controls and the debug log live behind the gear. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent" android:layout_height="match_parent"

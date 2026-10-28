@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""open_codec — the burst box's OPEN codec: any small GGUF model via llama.cpp + mismatch-resistant coding.
+"""open_codec — frame 0x03, the OPEN codec: any small GGUF model via llama.cpp + mismatch-resistant coding.
 
 Bellard's ts_sms is the better compressor but ships only for x86. This one runs wherever llama.cpp runs (phones
 included) and survives the two ends computing slightly different probabilities (Hu & Tang, arXiv 2601.17684):
@@ -8,16 +8,21 @@ token the far end could confuse it with, given a certified mismatch factor c.
 
 Wire: [0x03][model id][c×10][tail id][varint n_tokens][MRC bits]. Both ends need the same GGUF (sha-pinned below), the same
 PRIME, the same bucket table (buckets_v1.json, trained once, shipped with the code), the same code seed.
+The model id byte is advisory: every encoder in use (this file, the Android app) writes 1 and no decoder reads it; the
+model actually used is MODEL_PATH (the base model). It is left at 1 so 0x03 frames stay byte-identical across ends.
+
+This module also holds what frame 0x08 (det_codec.py) shares with 0x03: PRIME, the learned tail (TAIL_N, prime_for),
+MODEL_PATH, and detok.
 Measured 2026-10-21 (qwen2.5-0.5b q8_0): x86 batched encoder vs x86 step decoder 100/100 SMS exact at 2.2x; vs ARM
 kernels (qemu) the probability gap reached 2.86x, so the default c is 3.3.
 """
 import hashlib, json, os, sys
 import numpy as np
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mrc
 
-MODELS = {1: ("qwen2.5-0.5b-instruct-q8_0.gguf", "sha256:ca59ca7f13d0e15a…"),
-          2: ("qwen2.5-0.5b-base-q8_0.gguf", "sha256:d5163baa48d1797b…")}   # base: +2% on his real 0x08, same speed (10-25)
+MODELS = {1: ("qwen2.5-0.5b-instruct-q8_0.gguf", "sha256:ca59ca7f13d0e15a8cfa77bd17e65d24f6844b554a7b6c12e07a5f89ff76844e"),
+          2: ("qwen2.5-0.5b-base-q8_0.gguf", "sha256:d5163baa48d1797b1d274f271aa1fd152e3f07248011f7ea386f3d0667dce535")}
+# The base model is the default: +2% on real 0x08 traffic over instruct, same speed (measured 10-25). Same geometry.
 MODEL_PATH = os.environ.get("BURST_GGUF", "qwen2.5-0.5b-base-q8_0.gguf")
 PRIME = "The following is a short plain-English message sent between two people over a radio.\n\n"
 BUCKETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets_v1.json")
@@ -37,8 +42,20 @@ def _sm(u):
     u = np.asarray(u, np.float64); e = np.exp(u - u.max()); return e / e.sum()
 
 
+_warned = False
+
+
 def _coder(c):
-    freq = json.load(open(BUCKETS))["freq"] if os.path.exists(BUCKETS) else None
+    """The bucket table is part of the 0x03 wire: buckets_v1.json must sit beside this file on both ends. Without it the
+    coder falls back to mrc's built-in prior — still self-consistent, but NOT interoperable with ends that have the file."""
+    global _warned
+    freq = None
+    if os.path.exists(BUCKETS):
+        freq = json.load(open(BUCKETS))["freq"]
+    elif not _warned:
+        _warned = True
+        print(f"open_codec: {BUCKETS} not found — using the built-in bucket prior; 0x03 frames will not interoperate "
+              "with ends that have the table", file=sys.stderr)
     return mrc.MRC(llm().n_vocab(), c=c, bucket_freq=freq)
 
 
@@ -59,7 +76,7 @@ def _rv(buf, i):
         shift += 7
 
 
-# THE LEARNED TAIL : both ends keep the messages they have confirmed (exact on arrival,
+# THE LEARNED TAIL: both ends keep the messages they have confirmed (exact on arrival,
 # or fixed by the reader and proven by the hash; the sender keeps what it sent). The last TAIL_N of them, in order, are
 # appended to the PRIME — shared history was the cheapest prime in the arms test (+5.6% at a sixth of a pack's compute).
 # The header carries ONE byte: the low byte of sha256 over that tail, so the far end can tell which history was used and
@@ -103,8 +120,8 @@ def crunch(text, c=None, model_id=1, tail=()):
 
 def detok(L, ids):
     """ids -> bytes, exactly as the phone's BurstNative.detokenize (burst_jni.cpp): each piece into a 256-byte buffer.
-    llama-cpp-python's own detokenize uses 32 bytes and silently cut Qwen's long whitespace tokens — his ASCII-art link
-    came back short and failed its check, and every carried link after it with it (Pleiades paste, link 7, 10-24)."""
+    llama-cpp-python's own detokenize uses 32 bytes and silently cuts Qwen's long whitespace tokens: a pasted ASCII-art
+    link came back short and failed its check, and every carried link after it with it (measured 10-24)."""
     import ctypes
     import llama_cpp
     buf, out = ctypes.create_string_buffer(256), bytearray()
@@ -176,7 +193,8 @@ if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "d":
         sys.stdout.write(uncrunch(base64.b64decode(sys.argv[2])))
         sys.exit()
-    if sys.argv[1:] == ["build-buckets"]:
+    if sys.argv[1:] == ["build-buckets"]:                 # retrain buckets_v1.json (UCI SMS ham + Pride and Prejudice);
+                                                          # the shipped table came from this. Changing it changes the 0x03 wire.
         sms = [l.split("\t", 1)[1].strip() for l in open(os.environ.get("SMS_CORPUS", "SMSSpamCollection"),
                encoding="utf-8", errors="replace") if l.startswith("ham\t")]
         random.Random(20261020).shuffle(sms)

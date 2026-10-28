@@ -3,9 +3,10 @@ package com.gtc.burst
 import kotlin.math.max
 
 /**
- * Mismatch-resistant coding (Hu & Tang, arXiv 2601.17684), ported line for line from codec/mrc.py.
+ * Mismatch-resistant coding (Hu & Tang, arXiv 2601.17684), ported line for line from the reference implementation.
  * The two tables numpy would generate (the random code permutation and the Huffman bucket codes) are NOT regenerated
- * here: they are exported once from the box (golden/export.py) and shipped, so both ends hold the same bits.
+ * here: they are exported once from the reference implementation (codes.bin + tables.json in assets) and shipped,
+ * so both ends hold the same bits.
  */
 class Mrc(
     val codes: IntArray, val L: Int,

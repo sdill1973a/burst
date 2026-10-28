@@ -1,5 +1,5 @@
 /* det08.c — frame 0x08 encode/decode core, shared by the JNI (burst_jni.cpp) and the host harness (host_test.c).
- * Mirrors det/detcodec.c's do_encode/do_decode on the box, minus the text parsing. No floating-point arithmetic here.
+ * Mirrors the reference detcodec's do_encode/do_decode, minus the text parsing. No floating-point arithmetic here.
  */
 #include "det08.h"
 #include "detrc.h"

@@ -28,7 +28,7 @@ object Ai {
         "Anthropic" to ("https://api.anthropic.com/v1" to "claude-haiku-5-5"),
         "OpenRouter" to ("https://openrouter.ai/api/v1" to "openrouter/auto"),
         "Gemini" to ("https://generativelanguage.googleapis.com/v1beta/openai" to "gemini-2.5-flash"),
-        "My own server" to ("http://your-server:11434/v1" to "llama3.2"),
+        "My own server" to ("https://your-server/v1" to "llama3.2"),
     )
     val ASKS = linkedMapOf(
         "Summarize" to "Summarize this message in one or two short sentences.",

@@ -6,7 +6,7 @@ import kotlin.concurrent.thread
 /**
  * The deterministic engine behind frame 0x08 (detlm), resident only while it is being used: loaded lazily on the first
  * 0x08 encode/decode (~1 s from the same model.gguf llama.cpp already mapped — the weight pages are shared by the OS,
- * the extra is detlm's KV cache + scratch, ~520 MiB peak measured on the box), released after IDLE_MS without a call.
+ * the extra is detlm's KV cache + scratch, ~520 MiB peak measured on a desktop build), released after IDLE_MS without a call.
  */
 object Det {
     @Volatile var modelPath: String? = null
@@ -37,10 +37,8 @@ object Det {
         return true
     }
 
-    fun touch() { lastUsed = System.currentTimeMillis() }
-
     /** Run a native det call with the engine guaranteed resident for its whole duration: the block holds the same lock
-     *  the reaper takes, so an idle release can never land between ensure() and the call (Q's read, 10-24).
+     *  the reaper takes, so an idle release can never land between ensure() and the call.
      *  Returns null when the engine is unavailable. */
     @Synchronized fun <T> use(block: () -> T): T? {
         if (!ensure()) return null

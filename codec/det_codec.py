@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""det_codec — burst frame 0x08: an exact range coder over a bit-identical model (det/PLAN.md, lane B).
+"""det_codec — burst frame 0x08: an exact range coder over a bit-identical model.
 
     frame = [0x08][2-byte check = sha256(text)[:2]][varint n_tokens][range-coder bytes]
 
 Model and coder are implied by the codec byte: no model id, no c, no tail id. The history window (the learned tail,
 open_codec.prime_for) is found by the receiver trying candidate tails newest-first and letting the 2-byte check pick;
 nothing that fails the check is ever shown. Both ends must compute the SAME logits bit for bit — that is detlm's job
-(another lane); detrc (this lane, detrc.c via ctypes) turns identical logits into identical bytes.
+(detlm.c); detrc (detrc.c via ctypes) turns identical logits into identical bytes.
 
-Model protocol (pluggable, so this is testable before detlm exists):
+Model protocol (pluggable, so the coder is testable without model weights):
     m.n_vocab                      int
     m.tokenize(text) -> list[int]  m.detokenize(ids) -> str
     m.reset(prime_ids) -> logits   float32[V]: next-token logits after the prime
     m.step(tok) -> logits          float32[V]: next-token logits after feeding one more token
-Two implementations here: LlamaModel (llama.cpp as a stand-in — exact only encoder-and-decoder-on-the-same-box, same
+    m.n_ctx                        int or None: context size; a decode that would overrun it is refused up front
+Three implementations here: DetlmModel (the real engine), LlamaModel (llama.cpp as a stand-in — exact only encoder-and-decoder-on-the-same-box, same
 eval path) and MockModel (seeded hash model, byte tokens, no weights).
 
 API:  crunch(text, model, tail=()) -> bytes      uncrunch(frame, model, tails=()) -> text  (raises DecodeFailed)
@@ -22,8 +23,11 @@ import ctypes, hashlib, os, subprocess, sys
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))
-import open_codec                                   # PRIME, prime_for, TAIL_N — one definition, shared with 0x03
+try:
+    import open_codec                               # PRIME, prime_for, TAIL_N — one definition, shared with 0x03
+except ImportError:                                 # source tree: open_codec.py sits one directory up
+    sys.path.insert(0, os.path.dirname(HERE))
+    import open_codec
 
 CODEC_BYTE = 0x08
 MAX_TOKENS = 2048                                   # a flipped varint byte must not become a million model steps
@@ -181,8 +185,12 @@ def crunch(text, model, tail=()):
 
 
 def _decode_with(body, n, model, tail):
+    prime = model.tokenize(open_codec.prime_for(tail))
+    n_ctx = getattr(model, "n_ctx", None)
+    if n_ctx and len(prime) + n > n_ctx:            # cannot be a frame this model encoded under this history
+        raise DecodeFailed(f"{len(prime)} prime + {n} message tokens is over the {n_ctx}-token context")
     dec = Decoder(body)
-    lg = model.reset(model.tokenize(open_codec.prime_for(tail)))
+    lg = model.reset(prime)
     toks = []
     for _ in range(n):
         t = dec.get_logits(lg)
@@ -207,8 +215,8 @@ def uncrunch(frame, model, tails=(), max_tails=MAX_TAILS):
     for tail in cands:
         try:
             text = _decode_with(body, n, model, tail)
-        except (ValueError, UnicodeError):              # a garbage stream the model's detokenizer cannot render = no match
-            continue
+        except (ValueError, UnicodeError, RuntimeError):  # over the context, an engine error, or a stream the
+            continue                                      # detokenizer cannot render: this candidate does not match
         if _check(text) == chk:
             return text
     raise DecodeFailed("plaintext check failed under every candidate history: wrong decode, not shown")
@@ -225,6 +233,7 @@ class LlamaModel:
     def __init__(self, path=None, n_ctx=1024, n_threads=None):
         from llama_cpp import Llama
         path = path or open_codec.MODEL_PATH
+        self.n_ctx = n_ctx
         self.L = Llama(model_path=path, n_ctx=n_ctx, n_threads=n_threads or max(1, (os.cpu_count() or 2) // 2),
                        logits_all=False, verbose=False)
         self.n_vocab = self.L.n_vocab()
@@ -246,8 +255,8 @@ class LlamaModel:
 
 
 class DetlmModel:
-    """detlm (det/detlm.c via ctypes, libdetlm.so): the bit-identical engine — the SAME logits on the box and on the
-    phone, so frames encoded here decode there exactly (and back). Tokenizer: llama.cpp's, vocab-only load (integer,
+    """detlm (detlm.c via ctypes, libdetlm.so): the bit-identical engine — the SAME logits on every CPU it is built
+    for, so frames encoded on one machine decode on another exactly. Tokenizer: llama.cpp's, vocab-only load (integer,
     deterministic, no weights). Call pattern, kept identical to the C detcodec on both ends: the prime as ONE batch
     (logits of its last token), then every message token one at a time."""
 
@@ -262,12 +271,14 @@ class DetlmModel:
         L.detlm_reset.argtypes = [ctypes.c_void_p]
         L.detlm_n_vocab.argtypes = [ctypes.c_void_p]; L.detlm_n_vocab.restype = ctypes.c_int
         L.detlm_n_pos.argtypes = [ctypes.c_void_p]; L.detlm_n_pos.restype = ctypes.c_int
+        L.detlm_n_ctx.argtypes = [ctypes.c_void_p]; L.detlm_n_ctx.restype = ctypes.c_int
         L.detlm_eval.argtypes = [ctypes.c_void_p, i32p, ctypes.c_int, ctypes.c_int, f32p]; L.detlm_eval.restype = ctypes.c_int
         L.detlm_version.restype = ctypes.c_char_p
         self.h = L.detlm_load(path.encode(), int(n_ctx), int(n_threads))
         if not self.h:
             raise RuntimeError(f"detlm_load failed on {path}")
         self.n_vocab = L.detlm_n_vocab(self.h)
+        self.n_ctx = L.detlm_n_ctx(self.h)
         self.version = L.detlm_version().decode()
 
     def tokenize(self, text):
@@ -303,6 +314,7 @@ class MockModel:
     generator keyed on the WHOLE context (so different histories give different streams, as a real model would), with
     a context-chosen sharpness so flat, peaky and floor cases all occur."""
     n_vocab = 151936
+    n_ctx = None
 
     def __init__(self, seed=20261024):
         self.seed = seed; self.ctx = []

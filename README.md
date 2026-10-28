@@ -1,7 +1,7 @@
 # Burst
 
 Type a normal message. It goes over Meshtastic in a fraction of the bytes. It arrives exactly as typed, or the far end
-refuses it and asks again. It never shows a wrong guess.
+refuses it and asks again.
 
 An Android app that talks to your Meshtastic radio over Bluetooth, plus the codec source. It sends on the PRIVATE_APP
 port (256), so stock firmware carries it like any other data.
@@ -12,7 +12,8 @@ Real bytes on the air, every Burst header and check included. "Exact" means byte
 
 **Reproduce these yourself** — the codec is deterministic, so you get the same bytes (same frames sha256) we did.
 From `codec/` after `make -f Makefile.detlm`, with the model below and Project Gutenberg's *Pride and Prejudice*
-(`pg1342.txt`) and the UCI SMS Spam Collection:
+(`pg1342.txt`) and the UCI SMS Spam Collection (`SMSSpamCollection`, inside the zip at
+https://archive.ics.uci.edu/dataset/228/sms+spam+collection):
 
 | Public text | chars | packets | bytes | ratio | command |
 |---|---|---|---|---|---|
@@ -39,7 +40,9 @@ scalar C. It gives bit-identical results on any CPU, so the far end rebuilds the
 text.
 
 - **Exact or refused.** Every frame carries 2 bytes of the text's hash. A decode that doesn't match is refused, never
-  shown. The receiver then asks (`0x06`) for a resend without shared history.
+  shown. The receiver then asks (`0x06`) for a resend without shared history. A 16-bit check is not proof: a corrupted
+  or mismatched decode passes it by chance about 1 time in 65,536 per candidate history tried (up to 7), so roughly 1 in
+  9,000 at worst for a frame that decodes wrong.
 - **It learns the conversation.** The last 4 messages both ends confirmed (received with a passing check, or sent and
   ACKed by the peer's radio) prime the model. Replies get smaller as you talk.
 - **Long text** splits into a chain of up to 16 packets. A missing link is asked for and resent.
@@ -57,18 +60,43 @@ text.
   provider you named. Never over the radio. Keys are sealed by an Android Keystore key that never leaves the phone.
   Compression never needs this.
 
-Build: Android Studio or `cd android && ./gradlew assembleRelease -PburstAbis=arm64-v8a`. Needs NDK 29, plus llama.cpp
-at commit `9a286ac` (a git submodule: `git submodule update --init`).
+Build: Android Studio or `cd android && ./gradlew assembleRelease -PburstAbis=arm64-v8a`. Needs NDK 29
+(29.0.13113456), plus llama.cpp at commit `9a286ac` (a git submodule: `git submodule update --init`).
 
-## Codec on a computer
+## Run the codec
 
-`codec/` holds the C engine (`make`) and the Python codec (`det_codec.py`, with llama-cpp-python for the tokenizer).
-`test_det_codec.py` runs the golden vectors the app checks itself against.
+`codec/` holds the C engine (`detlm.c`, `detrc.c`) and the Python codec (`det_codec.py`; llama-cpp-python supplies only
+the tokenizer). Tested on Linux x86-64 with gcc and Python 3.12:
+
+```sh
+cd codec
+pip install -r requirements.txt     # numpy + llama-cpp-python (builds from source: needs cmake and a C++ compiler)
+make -f Makefile.detlm              # libdetlm.so, detlm_x86, detcodec_x86 (host only; `make -f Makefile.detlm arm` needs the NDK)
+curl -LO https://huggingface.co/mradermacher/Qwen2.5-0.5B-GGUF/resolve/main/Qwen2.5-0.5B.Q8_0.gguf
+sha256sum Qwen2.5-0.5B.Q8_0.gguf    # must be d5163baa48d1797b1d274f271aa1fd152e3f07248011f7ea386f3d0667dce535
+export BURST_GGUF=$PWD/Qwen2.5-0.5B.Q8_0.gguf
+python3 test_det_codec.py           # coder + refusal tests (numpy only, no model)
+python3 test_det_codec.py --golden  # the golden vectors the app checks itself against, on the real model
+curl -LO https://www.gutenberg.org/cache/epub/1342/pg1342.txt
+python3 repro.py paste pg1342.txt --start "It is a truth universally acknowledged" --flow --chars 2450
+```
+
+The last command is the table's first row; it should print `2449 chars -> 8 packet(s), 370 B on air, 6.619x, exact`
+and frames sha256 `97c880349f69abc562aabaa1ff9948505e077ae10c12d7251f01d3c883e44ad1`.
+
+`make` (plain) builds the range coder's cross-architecture harness; `make identity` (with the NDK and qemu-aarch64)
+checks x86 and aarch64 produce identical tables and bytes, and that its negative controls differ.
 
 ## Not yet
 
 Proven on the air between one phone (Galaxy S25) and one computer, each on its own radio. A second, unrelated phone is next. iOS isn't started. A smaller model
 is not planned, because exactness needs both ends on the same file.
+
+## Third-party
+
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) — MIT, a git submodule (the app's tokenizer and the 0x03 codec).
+- Qwen2.5-0.5B — Apache 2.0, Alibaba Cloud. Downloaded at first run, not bundled.
+- GGUF conversion: [mradermacher/Qwen2.5-0.5B-GGUF](https://huggingface.co/mradermacher/Qwen2.5-0.5B-GGUF).
 
 ## License
 

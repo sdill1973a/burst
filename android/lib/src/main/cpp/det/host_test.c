@@ -1,5 +1,5 @@
-/* host_test — the app's 0x08 code path (det08.c + detlm.c + detrc.c, the SAME sources the APK compiles) run on the
- * box against frames the box's det_codec.py produced (golden/export08.py -> golden/host08.jobs).
+/* host_test — the app's 0x08 code path (det08.c + detlm.c + detrc.c, the SAME sources the APK compiles) run on a
+ * desktop against frames the reference encoder produced (one job per golden vector, format below).
  *
  *   host_test MODEL.gguf JOBS [--threads N]
  *   JOBS line:  <check hex4> | <prime ids> | <msg ids> | <frame hex>
@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
         t_enc += now() - a;
         int same = ml == fl && memcmp(mine, frame, (size_t)fl) == 0;
         enc_same += same;
-        if (!same) printf("line %d: ENCODE DIFFERS (%s) mine=%d B box=%d B\n", lines, why ? why : "bytes", ml, fl);
+        if (!same) printf("line %d: ENCODE DIFFERS (%s) mine=%d B ref=%d B\n", lines, why ? why : "bytes", ml, fl);
         a = now();
         int n = det08_decode(m, ids, np, frame, fl, got, ctx, &why);
         t_dec += now() - a;

@@ -49,5 +49,4 @@ androidx = [
     "androidx-appcompat",
     "androidx-constraintlayout",
     "androidx-core-ktx",
-    "androidx-datastore-preferences",
 ]
