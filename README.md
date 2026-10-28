@@ -31,6 +31,26 @@ For comparison on those same messages: Unishox2 (what firmware uses now) 1.67×,
 (RWKV 169M, x86, no history, not on a phone) 4.52×. On very short messages (under about 10 characters) Unishox2 wins by
 1–3 bytes: Burst carries a 2-byte check and a small header.
 
+## Use it
+
+**Both people need Burst.** Bursts travel as data on port 256. The stock Meshtastic app doesn't show them, and a phone
+without Burst sees nothing.
+
+1. **Install.** Download `burst-0.1.apk` from this repo's Releases page and open it on an Android phone (arm64, Android 13+).
+   Android will ask you to allow installs from your browser or file manager.
+2. **Pair your radio.** Pair your Meshtastic radio in Android's Bluetooth settings first, the same way the Meshtastic app
+   needs. Close the Meshtastic app: only one app can hold the radio's Bluetooth link at a time.
+3. **Open Burst.** The first run downloads the model (531 MB, once; use Wi-Fi). Allow Bluetooth and notifications when asked.
+4. **Connect.** Tap **Connect** and pick your radio from the list of paired devices. Wait for *Radio ready*. Burst
+   remembers the radio and reconnects to it next time.
+5. **Send.** In *To*, put the other person's node id, like `!1a2b3c4d` (it's in the Meshtastic app's node list). Set *Ch*
+   to a private channel if you use one. Type, then tap **Send**. The log shows how many characters went out and how
+   many bytes that took.
+6. **Receive.** Incoming bursts appear in the chat and as a notification you can reply to without opening the app.
+
+Messages to `all` on channel 0 go out on the public default channel, where anyone can read them. Use a direct message or
+a private channel for anything you wouldn't post on a board.
+
 ## How it works
 
 Both ends run the same **generic small language model**: Qwen2.5-0.5B (base), q8_0, 531 MB. It's the same file on every
@@ -72,7 +92,7 @@ the tokenizer). Tested on Linux x86-64 with gcc and Python 3.12:
 cd codec
 pip install -r requirements.txt     # numpy + llama-cpp-python (builds from source: needs cmake and a C++ compiler)
 make -f Makefile.detlm              # libdetlm.so, detlm_x86, detcodec_x86 (host only; `make -f Makefile.detlm arm` needs the NDK)
-curl -LO https://huggingface.co/mradermacher/Qwen2.5-0.5B-GGUF/resolve/main/Qwen2.5-0.5B.Q8_0.gguf
+curl -LO https://huggingface.co/mradermacher/Qwen2.5-0.5B-GGUF/resolve/c20fdc01c83cad0e38968fb98bc5476042d1c8db/Qwen2.5-0.5B.Q8_0.gguf
 sha256sum Qwen2.5-0.5B.Q8_0.gguf    # must be d5163baa48d1797b1d274f271aa1fd152e3f07248011f7ea386f3d0667dce535
 export BURST_GGUF=$PWD/Qwen2.5-0.5B.Q8_0.gguf
 python3 test_det_codec.py           # coder + refusal tests (numpy only, no model)
