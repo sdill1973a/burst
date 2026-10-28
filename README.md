@@ -7,9 +7,9 @@ An Android app that talks to your Meshtastic radio over Bluetooth, plus the code
 port (256), so stock firmware carries it like any other data.
 
 **This is not instant messaging.** It's accurate, free messaging: every message arrives exactly as typed or not at
-all, with no service, subscription or internet behind it. The phone takes a few seconds to think before it sends, and
-the more you use it, the less it has to send: replies shrink as a conversation builds, so long messages need fewer
-packets and spend less time on the air.
+all, with no service, subscription or internet behind it. **Exact from the first message, and faster on the air the more
+you use it.** The phone takes a few seconds to think, but it learns the conversation, so it sends less and spends less
+time on the air.
 
 ## What you get
 
