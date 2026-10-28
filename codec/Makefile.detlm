@@ -1,0 +1,49 @@
+# detlm builds (use: make -f Makefile.detlm <target>). Determinism flags are load-bearing: -ffp-contract=off
+# (gcc and NDK clang both default to contraction), never -ffast-math / -Ofast (crtfastmath flips FTZ/DAZ), no -march=native.
+CC      ?= gcc
+NDK     ?= $(ANDROID_HOME)/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin
+ARMCC   ?= $(NDK)/aarch64-linux-android31-clang
+DETFLAGS = -O2 -ffp-contract=off -fno-math-errno -fno-trapping-math -Wall -Wextra -std=c11
+SRC      = detlm.c detlm_cli.c
+
+all: detlm_x86 detlm_arm libdetlm.so detcodec_x86 detcodec_arm
+
+detlm_x86: $(SRC) detlm.h
+	$(CC) $(DETFLAGS) -o $@ $(SRC) -lpthread -lm
+
+# negative control 1: reversed block accumulation order (must change the hash)
+detlm_x86_reorder: $(SRC) detlm.h
+	$(CC) $(DETFLAGS) -DDETLM_REORDER_SUM -o $@ $(SRC) -lpthread -lm
+
+# negative control 2: FMA contraction on (x86 needs -mfma to even have the instruction)
+detlm_x86_fma: $(SRC) detlm.h
+	$(CC) -O2 -ffp-contract=fast -mfma -fno-math-errno -fno-trapping-math -std=c11 -o $@ $(SRC) -lpthread -lm
+
+# static aarch64 (bionic) binary: runs on the phone and under qemu-aarch64
+detlm_arm: $(SRC) detlm.h
+	$(ARMCC) $(DETFLAGS) -static -o $@ $(SRC)
+
+# negative control 3: aarch64 with contraction on (fmla/fmadd emitted)
+detlm_arm_fma: $(SRC) detlm.h
+	$(ARMCC) -O2 -ffp-contract=fast -fno-math-errno -fno-trapping-math -std=c11 -static -o $@ $(SRC)
+
+# shared library for ctypes / JNI consumers
+libdetlm.so: detlm.c detlm.h
+	$(CC) $(DETFLAGS) -fPIC -shared -o $@ detlm.c -lpthread -lm
+
+# detcodec: frame 0x08 on the phone (detlm + detrc, no Python, no tokenizer) — SAME flags as the engine
+CODEC_SRC = detlm.c detrc.c detcodec.c
+detcodec_x86: $(CODEC_SRC) detlm.h detrc.h detrc_exptab.h
+	$(CC) $(DETFLAGS) -o $@ $(CODEC_SRC) -lpthread -lm
+
+detcodec_arm: $(CODEC_SRC) detlm.h detrc.h detrc_exptab.h
+	$(ARMCC) $(DETFLAGS) -static -o $@ $(CODEC_SRC)
+
+check-fma: detlm_x86 detlm_arm detlm_arm_fma
+	@echo "x86 fused ops (want 0):  $$(objdump -d detlm_x86 | grep -cE 'vfmadd|vfmsub|vfnmadd|vfnmsub')"
+	@echo "arm fused ops (want 0):  $$($(NDK)/llvm-objdump -d detlm_arm | grep -cE '\bfmadd|\bfmsub|\bfnmadd|\bfnmsub|\bfmla|\bfmls')"
+	@echo "arm_fma control fused ops (want >0): $$($(NDK)/llvm-objdump -d detlm_arm_fma | grep -cE '\bfmadd|\bfmsub|\bfnmadd|\bfnmsub|\bfmla|\bfmls')"
+	@echo "x86 libm transcendentals (want none):"; nm detlm_x86 | grep -E ' U (expf|sinf|cosf|powf|logf|tanhf|exp|sin|cos|pow|log)$$' || echo "  none"
+
+clean:
+	rm -f detlm_x86 detlm_x86_reorder detlm_x86_fma detlm_arm detlm_arm_fma libdetlm.so detcodec_x86 detcodec_arm

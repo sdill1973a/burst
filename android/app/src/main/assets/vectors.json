@@ -1,0 +1,208 @@
+[
+ {
+  "text": "Checking in. How goes it? Sound off.",
+  "tokens": [
+   40129,
+   304,
+   13,
+   2585,
+   5780,
+   432,
+   30,
+   14594,
+   1007,
+   13
+  ],
+  "wire_b64": "AwEhAApVUPLnHvalhG9p0xN2yJ68",
+  "exact": true
+ },
+ {
+  "text": "On my way, ETA 20 min.",
+  "tokens": [
+   1925,
+   847,
+   1616,
+   11,
+   89014,
+   220,
+   17,
+   15,
+   1308,
+   13
+  ],
+  "wire_b64": "AwEhAAodEG9wGaiJWPEWh6BcrqrrAA==",
+  "exact": true
+ },
+ {
+  "text": "Water is up over the low crossing on the creek road.",
+  "tokens": [
+   28253,
+   374,
+   705,
+   916,
+   279,
+   3347,
+   26638,
+   389,
+   279,
+   64405,
+   5636,
+   13
+  ],
+  "wire_b64": "AwEhAAxXMDczClqBs2j3aMu8eulaDNkKD7A=",
+  "exact": true
+ },
+ {
+  "text": "Camp is at the second pullout past the bridge. Bring ice and the big tarp.",
+  "tokens": [
+   33855,
+   374,
+   518,
+   279,
+   2086,
+   6815,
+   411,
+   3267,
+   279,
+   14164,
+   13,
+   39124,
+   9853,
+   323,
+   279,
+   2409,
+   259,
+   7876,
+   13
+  ],
+  "wire_b64": "AwEhABMi1jSM3R52ZM66R2cE2+C+Pxukz7TfRr+JspDvIpYCzffW",
+  "exact": true
+ },
+ {
+  "text": "Copy that.",
+  "tokens": [
+   12106,
+   429,
+   13
+  ],
+  "wire_b64": "AwEhAAOdjwISXQA=",
+  "exact": true
+ },
+ {
+  "text": "Battery at 40%, heading back.",
+  "tokens": [
+   69263,
+   518,
+   220,
+   19,
+   15,
+   13384,
+   14496,
+   1182,
+   13
+  ],
+  "wire_b64": "AwEhAAlX88kHnmTo+q9ZROlHrbA=",
+  "exact": true
+ },
+ {
+  "text": "Lat 44.4280, lon -110.5885 \u2014 parked by the overpass.",
+  "tokens": [
+   23140,
+   220,
+   19,
+   19,
+   13,
+   19,
+   17,
+   23,
+   15,
+   11,
+   17806,
+   481,
+   16,
+   16,
+   15,
+   13,
+   20,
+   23,
+   23,
+   20,
+   1959,
+   42235,
+   553,
+   279,
+   916,
+   6385,
+   13
+  ],
+  "wire_b64": "AwEhABsmpqTgdw6P2wdgWrar1Hr++n0urfZ4ti2Tl4aSqqz0Wqdi9gr7YA==",
+  "exact": true
+ },
+ {
+  "text": "Did you get my last message? Nothing came through on my end.",
+  "tokens": [
+   6986,
+   498,
+   633,
+   847,
+   1537,
+   1943,
+   30,
+   12064,
+   3697,
+   1526,
+   389,
+   847,
+   835,
+   13
+  ],
+  "wire_b64": "AwEhAA4del52y/rcr3idAHpvoo0v6z7A",
+  "exact": true
+ },
+ {
+  "text": "Power is out on the east side of town and the co-op says it will be back by morning. Nobody is hurt.",
+  "tokens": [
+   14986,
+   374,
+   700,
+   389,
+   279,
+   10984,
+   3108,
+   315,
+   6290,
+   323,
+   279,
+   1062,
+   29492,
+   2727,
+   432,
+   686,
+   387,
+   1182,
+   553,
+   6556,
+   13,
+   36458,
+   374,
+   12898,
+   13
+  ],
+  "wire_b64": "AwEhABkjO3Ozg8mpfozS5XQMpdsXjXvnQCj7T/8e9Oww+2mzh1kCkesA",
+  "exact": true
+ },
+ {
+  "text": "Love you. See you Sunday.",
+  "tokens": [
+   28251,
+   498,
+   13,
+   3496,
+   498,
+   7270,
+   13
+  ],
+  "wire_b64": "AwEhAAdT9DF/9uICeyU/0A==",
+  "exact": true
+ }
+]

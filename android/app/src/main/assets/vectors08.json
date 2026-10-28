@@ -1,0 +1,321 @@
+[
+ {
+  "text": "Checking in. How goes it? Sound off.",
+  "history": [],
+  "tail": [],
+  "tokens": [
+   40129,
+   304,
+   13,
+   2585,
+   5780,
+   432,
+   30,
+   14594,
+   1007,
+   13
+  ],
+  "prime_tokens": 17,
+  "frame_b64": "CNHlCu8gSYfWTzY+HQ=="
+ },
+ {
+  "text": "On my way, ETA 20 min.",
+  "history": [
+   "Checking in. How goes it? Sound off."
+  ],
+  "tail": [
+   "Checking in. How goes it? Sound off."
+  ],
+  "tokens": [
+   1925,
+   847,
+   1616,
+   11,
+   89014,
+   220,
+   17,
+   15,
+   1308,
+   13
+  ],
+  "prime_tokens": 27,
+  "frame_b64": "CKNtCkTVGjVgLUY="
+ },
+ {
+  "text": "Water is up over the low crossing on the creek road.",
+  "history": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min."
+  ],
+  "tail": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min."
+  ],
+  "tokens": [
+   28253,
+   374,
+   705,
+   916,
+   279,
+   3347,
+   26638,
+   389,
+   279,
+   64405,
+   5636,
+   13
+  ],
+  "prime_tokens": 37,
+  "frame_b64": "CDRDDNDnM8YfEXZUzt5Gaw=="
+ },
+ {
+  "text": "Camp is at the second pullout past the bridge. Bring ice and the big tarp.",
+  "history": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min.",
+   "Water is up over the low crossing on the creek road."
+  ],
+  "tail": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min.",
+   "Water is up over the low crossing on the creek road."
+  ],
+  "tokens": [
+   33855,
+   374,
+   518,
+   279,
+   2086,
+   6815,
+   411,
+   3267,
+   279,
+   14164,
+   13,
+   39124,
+   9853,
+   323,
+   279,
+   2409,
+   259,
+   7876,
+   13
+  ],
+  "prime_tokens": 49,
+  "frame_b64": "CO62E9mQADPwpm5OND0zzq6BDw=="
+ },
+ {
+  "text": "Copy that.",
+  "history": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min.",
+   "Water is up over the low crossing on the creek road.",
+   "Camp is at the second pullout past the bridge. Bring ice and the big tarp."
+  ],
+  "tail": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min.",
+   "Water is up over the low crossing on the creek road.",
+   "Camp is at the second pullout past the bridge. Bring ice and the big tarp."
+  ],
+  "tokens": [
+   12106,
+   429,
+   13
+  ],
+  "prime_tokens": 68,
+  "frame_b64": "CPcpA6Mfbw=="
+ },
+ {
+  "text": "Battery at 40%, heading back.",
+  "history": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min.",
+   "Water is up over the low crossing on the creek road.",
+   "Camp is at the second pullout past the bridge. Bring ice and the big tarp.",
+   "Copy that."
+  ],
+  "tail": [
+   "On my way, ETA 20 min.",
+   "Water is up over the low crossing on the creek road.",
+   "Camp is at the second pullout past the bridge. Bring ice and the big tarp.",
+   "Copy that."
+  ],
+  "tokens": [
+   69263,
+   518,
+   220,
+   19,
+   15,
+   13384,
+   14496,
+   1182,
+   13
+  ],
+  "prime_tokens": 61,
+  "frame_b64": "CAB2CfaG4u1C2Q4="
+ },
+ {
+  "text": "Lat 44.4280, lon -110.5885 \u2014 parked by the overpass.",
+  "history": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min.",
+   "Water is up over the low crossing on the creek road.",
+   "Camp is at the second pullout past the bridge. Bring ice and the big tarp.",
+   "Copy that.",
+   "Battery at 40%, heading back."
+  ],
+  "tail": [
+   "Water is up over the low crossing on the creek road.",
+   "Camp is at the second pullout past the bridge. Bring ice and the big tarp.",
+   "Copy that.",
+   "Battery at 40%, heading back."
+  ],
+  "tokens": [
+   23140,
+   220,
+   19,
+   19,
+   13,
+   19,
+   17,
+   23,
+   15,
+   11,
+   17806,
+   481,
+   16,
+   16,
+   15,
+   13,
+   20,
+   23,
+   23,
+   20,
+   1959,
+   42235,
+   553,
+   279,
+   916,
+   6385,
+   13
+  ],
+  "prime_tokens": 60,
+  "frame_b64": "CLHPG7+CAXF+VoeNyrq6rqqDlA=="
+ },
+ {
+  "text": "Did you get my last message? Nothing came through on my end.",
+  "history": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min.",
+   "Water is up over the low crossing on the creek road.",
+   "Camp is at the second pullout past the bridge. Bring ice and the big tarp.",
+   "Copy that.",
+   "Battery at 40%, heading back.",
+   "Lat 44.4280, lon -110.5885 \u2014 parked by the overpass."
+  ],
+  "tail": [
+   "Camp is at the second pullout past the bridge. Bring ice and the big tarp.",
+   "Copy that.",
+   "Battery at 40%, heading back.",
+   "Lat 44.4280, lon -110.5885 \u2014 parked by the overpass."
+  ],
+  "tokens": [
+   6986,
+   498,
+   633,
+   847,
+   1537,
+   1943,
+   30,
+   12064,
+   3697,
+   1526,
+   389,
+   847,
+   835,
+   13
+  ],
+  "prime_tokens": 75,
+  "frame_b64": "CH6RDohwZNSml27X"
+ },
+ {
+  "text": "Power is out on the east side of town and the co-op says it will be back by morning. Nobody is hurt.",
+  "history": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min.",
+   "Water is up over the low crossing on the creek road.",
+   "Camp is at the second pullout past the bridge. Bring ice and the big tarp.",
+   "Copy that.",
+   "Battery at 40%, heading back.",
+   "Lat 44.4280, lon -110.5885 \u2014 parked by the overpass.",
+   "Did you get my last message? Nothing came through on my end."
+  ],
+  "tail": [
+   "Copy that.",
+   "Battery at 40%, heading back.",
+   "Lat 44.4280, lon -110.5885 \u2014 parked by the overpass.",
+   "Did you get my last message? Nothing came through on my end."
+  ],
+  "tokens": [
+   14986,
+   374,
+   700,
+   389,
+   279,
+   10984,
+   3108,
+   315,
+   6290,
+   323,
+   279,
+   1062,
+   29492,
+   2727,
+   432,
+   686,
+   387,
+   1182,
+   553,
+   6556,
+   13,
+   36458,
+   374,
+   12898,
+   13
+  ],
+  "prime_tokens": 70,
+  "frame_b64": "CMIAGchEwthlbFzYgFwBDFLgXg=="
+ },
+ {
+  "text": "Love you. See you Sunday.",
+  "history": [
+   "Checking in. How goes it? Sound off.",
+   "On my way, ETA 20 min.",
+   "Water is up over the low crossing on the creek road.",
+   "Camp is at the second pullout past the bridge. Bring ice and the big tarp.",
+   "Copy that.",
+   "Battery at 40%, heading back.",
+   "Lat 44.4280, lon -110.5885 \u2014 parked by the overpass.",
+   "Did you get my last message? Nothing came through on my end.",
+   "Power is out on the east side of town and the co-op says it will be back by morning. Nobody is hurt."
+  ],
+  "tail": [
+   "Battery at 40%, heading back.",
+   "Lat 44.4280, lon -110.5885 \u2014 parked by the overpass.",
+   "Did you get my last message? Nothing came through on my end.",
+   "Power is out on the east side of town and the co-op says it will be back by morning. Nobody is hurt."
+  ],
+  "tokens": [
+   28251,
+   498,
+   13,
+   3496,
+   498,
+   7270,
+   13
+  ],
+  "prime_tokens": 92,
+  "frame_b64": "CPy5B94ZjFvS"
+ }
+]

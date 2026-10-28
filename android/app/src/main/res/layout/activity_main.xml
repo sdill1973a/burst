@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Chat first (10-24): header with the radio as a status dot, bubbles, a compose row.
+     The old controls and the debug log live behind the gear. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:fitsSystemWindows="true" android:background="#111418">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="56dp" android:orientation="horizontal"
+        android:gravity="center_vertical" android:paddingStart="16dp" android:paddingEnd="8dp" android:background="#1B2027">
+        <TextView android:id="@+id/peer" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:text="Burst" android:textSize="20sp" android:textStyle="bold" android:textColor="#F2F4F7" />
+        <LinearLayout android:id="@+id/status" android:layout_width="wrap_content" android:layout_height="match_parent"
+            android:orientation="horizontal" android:gravity="center_vertical" android:paddingStart="12dp" android:paddingEnd="12dp"
+            android:background="?android:attr/selectableItemBackground">
+            <View android:id="@+id/dot" android:layout_width="12dp" android:layout_height="12dp" android:background="@drawable/dot" />
+            <TextView android:id="@+id/statusText" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="8dp" android:text="Off" android:textSize="14sp" android:textColor="#AAB2BD" />
+        </LinearLayout>
+        <TextView android:id="@+id/gear" android:layout_width="48dp" android:layout_height="48dp" android:gravity="center"
+            android:text="⚙" android:textSize="22sp" android:textColor="#AAB2BD"
+            android:background="?android:attr/selectableItemBackgroundBorderless" />
+    </LinearLayout>
+
+    <LinearLayout android:id="@+id/settings" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="12dp" android:background="#1B2027" android:visibility="gone">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+            <EditText android:id="@+id/radio" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                android:hint="Radio name" android:text="" android:inputType="text" android:textColor="#F2F4F7" />
+            <EditText android:id="@+id/to" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                android:hint="To (!hex or all)" android:inputType="text" android:textColor="#F2F4F7" />
+            <EditText android:id="@+id/chan" android:layout_width="0dp" android:layout_weight="0.5" android:layout_height="wrap_content"
+                android:hint="Ch" android:text="1" android:inputType="number" android:textColor="#F2F4F7" />
+            <Button android:id="@+id/connect" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Connect" />
+        </LinearLayout>
+        <CheckBox android:id="@+id/force08" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="Exact codec (0x08) to everyone — off sends 0x03 until a peer shows it reads 0x08" android:textSize="12sp" android:textColor="#AAB2BD" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="8dp"
+            android:text="Compression runs on this phone with a generic small model (Qwen2.5-0.5B) — the same file on every phone, nothing personal in it, nothing sent anywhere but the radio. An AI account is optional: it is used only when you tap AI, sends only the text you pick to the provider you name, over the internet, and never touches the radio."
+            android:textSize="12sp" android:textColor="#AAB2BD" />
+        <Button android:id="@+id/aiAccounts" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AI accounts (optional)" />
+        <ScrollView android:id="@+id/logScroll" android:layout_width="match_parent" android:layout_height="220dp" android:background="#0B0D10">
+            <TextView android:id="@+id/log" android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="6dp"
+                android:textIsSelectable="true" android:textSize="11sp" android:typeface="monospace" android:textColor="#8FA0B3" />
+        </ScrollView>
+    </LinearLayout>
+
+    <ScrollView android:id="@+id/chatScroll" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+        <LinearLayout android:id="@+id/chat" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:padding="12dp" />
+    </ScrollView>
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal"
+        android:gravity="bottom" android:padding="8dp" android:background="#1B2027">
+        <EditText android:id="@+id/input" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:hint="Message" android:inputType="textMultiLine|textCapSentences" android:maxLines="5"
+            android:textColor="#F2F4F7" android:textColorHint="#6B7480" android:background="@drawable/compose" android:padding="12dp" />
+        <Button android:id="@+id/ai" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp" android:text="AI" />
+        <Button android:id="@+id/send" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp" android:text="Send" android:enabled="false" />
+    </LinearLayout>
+</LinearLayout>
