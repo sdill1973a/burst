@@ -8,22 +8,31 @@ port (256), so stock firmware carries it like any other data.
 
 ## Numbers
 
-Real bytes on the air, headers and checks included. "Exact" means byte-for-byte equal to what was typed.
+Real bytes on the air, every Burst header and check included. "Exact" means byte-for-byte equal to what was typed.
 
-| Text | Burst | Burst + conversation history | Unishox2 (what firmware uses now) | zstd |
-|---|---|---|---|---|
-| 239 real typed messages, one user (avg 359 chars) | 4.42× | **5.93×** | 1.67× | 1.47× |
-| 200 public SMS from strangers (avg 74 chars) | 3.19× | — (no shared history) | 1.55× | 1.06× |
+**Reproduce these yourself** — the codec is deterministic, so you get the same bytes (same frames sha256) we did.
+From `codec/` after `make -f Makefile.detlm`, with the model below and Project Gutenberg's *Pride and Prejudice*
+(`pg1342.txt`) and the UCI SMS Spam Collection:
 
-Every message exact, every arm. The SMS row is 200 seeded messages from the public UCI SMS Spam Collection (ham only). Burst was never tuned on it, though public 2012 text may sit in the model's training data. On very
-short messages (under about 10 characters) Unishox2 wins by 1–3 bytes: Burst carries a 2-byte check and a small header.
+| Public text | chars | packets | bytes | ratio | command |
+|---|---|---|---|---|---|
+| *Pride and Prejudice*, opening, pasted as one message | 2,449 | 8 | 370 | **6.62×** | `python repro.py paste pg1342.txt --start "It is a truth universally acknowledged" --flow --chars 2450` |
+| *Pride and Prejudice*, all of chapter 1 | 4,712 | 16 | 761 | **6.19×** | `python repro.py paste pg1342.txt --chapter 1 --flow` |
+| 200 SMS from strangers, one at a time, no history (avg 74 chars) | 14,863 | 200 | 4,582 | **3.24×** | `python repro.py lines SMSSpamCollection --sms-seed 20261024 --n 200` |
 
-For reference, Fabrice Bellard's ts_sms (RWKV 169M, x86) scores 4.52× and 3.71× on the same two sets. It is
-the best cold result on short texts, but it has no history and doesn't run on a phone.
+The first row was also sent **on the air** from a fresh install of this app to a second radio: 8 packets, 368 bytes,
+exact (6.62×). Every number above decoded back exact. Burst was never tuned on either text, though public text may sit in
+the model's training data.
+
+With history the numbers go up, because the model is primed on your recent conversation. One user's own 239 typed
+messages (private, so not reproducible here) measured 5.93× with history against 4.42× without, on an earlier model.
+For comparison on those same messages: Unishox2 (what firmware uses now) 1.67×, zstd 1.47×, Fabrice Bellard's ts_sms
+(RWKV 169M, x86, no history, not on a phone) 4.52×. On very short messages (under about 10 characters) Unishox2 wins by
+1–3 bytes: Burst carries a 2-byte check and a small header.
 
 ## How it works
 
-Both ends run the same **generic small language model**: Qwen2.5-0.5B-Instruct, q8_0, 676 MB. It's the same file on every
+Both ends run the same **generic small language model**: Qwen2.5-0.5B (base), q8_0, 531 MB. It's the same file on every
 phone, sha256-pinned, and has nothing personal in it. The model predicts each next token of your message, and only the
 surprise goes on the air, range-coded. The engine that computes the predictions (`codec/detlm.c`) is plain integer and
 scalar C. It gives bit-identical results on any CPU, so the far end rebuilds the exact same predictions and the exact same
@@ -39,7 +48,7 @@ text.
 
 ## The app
 
-- First run downloads the model once from Hugging Face (676 MB, Wi-Fi recommended), checks its sha256, and resumes if
+- First run downloads the model once from Hugging Face (531 MB, Wi-Fi recommended), checks its sha256, and resumes if
   interrupted. After that, nothing leaves the phone but the radio.
 - Peer names come from your mesh's node list.
 - **Bring your own AI (optional).** Behind the gear, add any OpenAI-compatible account: OpenAI, Anthropic, OpenRouter,
