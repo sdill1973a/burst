@@ -3,6 +3,7 @@
 
     python repro.py paste  FILE [--chapter 1] [--chars N]   # one long paste, chained exactly as on air
     python repro.py lines  FILE [--sms-seed 20261024 --n 200] # many short messages, each alone (no history)
+    add --pack FILE to either: a context pack both ends hold before anything is sent
 
 paste: the text is split exactly as the Android app's Send does (Chain.parts + Chain.split): parts of at most 4,000
 chars; in each, rough links of ~380 chars at sentence then word boundaries, each crunched for real and halved at a word
@@ -167,10 +168,15 @@ def main():
     ap.add_argument("--start", help="begin at the first occurrence of this phrase (unambiguous; --chapter can hit a contents line)")
     ap.add_argument("--flow", action="store_true",
                     help="join the book's hard line breaks into flowing text, as a person pastes it")
+    ap.add_argument("--pack", help="a context pack both ends already hold: its text goes into the prime ahead of everything")
     ap.add_argument("--n", type=int, default=200)
     ap.add_argument("--threads", type=int, default=4)
     a = ap.parse_args()
     raw = open(a.file, encoding="utf-8", errors="replace").read().replace("\r\n", "\n").lstrip("﻿")
+    if a.pack:
+        pack = open(a.pack, encoding="utf-8").read().strip()
+        oc.PRIME = oc.PRIME + pack + "\n\n"
+        print(f"pack {os.path.basename(a.pack)} sha256 {hashlib.sha256(pack.encode()).hexdigest()[:16]}... ({len(pack)} chars)")
     m = dc.DetlmModel(n_threads=a.threads)
     print(f"model {os.path.basename(oc.MODEL_PATH)} sha256 "
           f"{hashlib.sha256(open(oc.MODEL_PATH, 'rb').read()).hexdigest()[:16]}... detlm {m.version}")
