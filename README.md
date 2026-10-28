@@ -6,6 +6,42 @@ refuses it and asks again.
 An Android app that talks to your Meshtastic radio over Bluetooth, plus the codec source. It sends on the PRIVATE_APP
 port (256), so stock firmware carries it like any other data.
 
+## Why
+
+**Most of any message is already known.** In a world of AI, the public record of human history, its books and
+documents and how people talk, is common knowledge. A small language model carries a compressed copy of it, and anyone
+can have the same one. That shared copy is ground both ends of a conversation already stand on.
+
+**Common knowledge doesn't need to travel. Change does.** Courts don't make anyone prove that water runs downhill.
+People don't re-explain the world each time they talk; they assume what's shared and say what's different.
+Communication at its best is a stream of deltas of change against a world both sides already hold.
+
+**Radios should work that way.** A Meshtastic message is about 200 characters on a slow, shared channel, and those bytes
+matter most where there's nothing else: off-grid, in a disaster. Spending them on what both ends already know wastes the
+scarcest thing there is.
+
+**So Burst shares the ground first and sends only the change.** It starts with the common record, held in the model.
+Then a pack on the subject, if both sides load one. Then what this conversation has already said. Only the surprise goes
+on the air, and it arrives exact, or it's refused.
+
+**It should belong to everyone.** Common knowledge shouldn't be owned, so neither should the tool that uses it. It runs
+on an ordinary phone, needs no server or account, and is open source.
+
+## The idea
+
+Shared ground comes in three layers, and each one makes messages smaller:
+
+1. **The common record.** The same generic model on every phone. Nothing personal in it.
+2. **A pack on the subject.** A page of text both ends load ahead of time: how weather is reported, a search team's
+   protocol, a farm's field names. It's identified by its fingerprint, so both sides know they hold the same one.
+3. **The conversation.** The last few messages both ends confirmed.
+
+**The model's copy is blurry.** It predicts the record; it can't recite it. So Burst never trusts a guess. Every
+message carries a check, and a decode that doesn't match exactly is refused and asked for again.
+
+**Not just radios.** Anything that has to say a lot through a narrow pipe can work this way, as long as both ends hold
+the same model and the same packs.
+
 ## Numbers
 
 Real bytes on the air, every Burst header and check included. "Exact" means byte-for-byte equal to what was typed.
@@ -20,10 +56,13 @@ https://archive.ics.uci.edu/dataset/228/sms+spam+collection):
 | *Pride and Prejudice*, opening, pasted as one message | 2,449 | 8 | 370 | **6.62×** | `python repro.py paste pg1342.txt --start "It is a truth universally acknowledged" --flow --chars 2450` |
 | *Pride and Prejudice*, all of chapter 1 | 4,712 | 16 | 761 | **6.19×** | `python repro.py paste pg1342.txt --chapter 1 --flow` |
 | 200 SMS from strangers, one at a time, no history (avg 74 chars) | 14,863 | 200 | 4,582 | **3.24×** | `python repro.py lines SMSSpamCollection --sms-seed 20261024 --n 200` |
+| 140 National Weather Service forecasts (10 state capitals, 2026-10-28), one at a time, no pack (avg 86 chars) | 12,072 | 140 | 2,371 | **5.09×** | `python repro.py lines packs/test/nws_2026-10-28.txt` |
+| The same 140, with a one-page weather pack on both ends | 12,072 | 140 | 1,560 | **7.74×** | `python repro.py lines packs/test/nws_2026-10-28.txt --pack packs/nws_forecast_style.txt` |
 
 The first row was also sent **on the air** from a fresh install of this app to a second radio: 8 packets, 368 bytes,
-exact (6.62×). Every number above decoded back exact. Burst was never tuned on either text, though public text may sit in
-the model's training data.
+exact (6.62×). Every number above decoded back exact. Burst was never tuned on any of these texts. A famous book is part of the
+common record the model learned from, so it costs little to send: that's the idea working, not a trick. The weather pack
+(`codec/packs/nws_forecast_style.txt`) was written and committed before any test forecast was fetched.
 
 With history the numbers go up, because the model is primed on your recent conversation. One user's own 239 typed
 messages (private, so not reproducible here) measured 5.93× with history against 4.42× without, on an earlier model.
@@ -109,7 +148,7 @@ checks x86 and aarch64 produce identical tables and bytes, and that its negative
 
 ## Not yet
 
-Proven on the air between one phone (Galaxy S25) and one computer, each on its own radio. A second, unrelated phone is next. iOS isn't started. A smaller model
+Proven on the air between one phone (Galaxy S25) and one computer, each on its own radio. A second, unrelated phone is next. iOS isn't started. Packs work in the codec (`repro.py --pack`) but the app can't load one yet. A smaller model
 is not planned, because exactness needs both ends on the same file.
 
 ## Third-party
