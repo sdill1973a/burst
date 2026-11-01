@@ -14,3 +14,7 @@ codec/detlm_x86*
 codec/detlm_arm*
 codec/detcodec_x86
 codec/detcodec_arm
+codec/libdetlm.so
+codec/build/
+codec/*.egg-info/
+dist/

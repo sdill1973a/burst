@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "burst-codec"
+version = "0.1.0"
+description = "Burst: exact text compression for LoRa/Meshtastic radios — a small language model both ends share, so only the surprise crosses the air."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Scott Dill" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "llama-cpp-python>=0.3"]
+keywords = ["meshtastic", "lora", "compression", "llm", "radio"]
+classifiers = ["Programming Language :: Python :: 3", "Topic :: Communications :: Ham Radio", "Topic :: System :: Archiving :: Compression"]
+
+[project.scripts]
+burst-codec = "burst_codec.cli:main"
+
+[tool.setuptools]
+package-dir = { "burst_codec" = "." }
+packages = ["burst_codec"]
+
+[tool.setuptools.package-data]
+burst_codec = ["*.json", "*.c", "*.h", "Makefile", "Makefile.detlm", "packs/*.txt", "packs/test/*.txt"]
