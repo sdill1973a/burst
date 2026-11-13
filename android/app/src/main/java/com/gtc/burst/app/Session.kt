@@ -9,7 +9,12 @@ import com.gtc.burst.MeshBle
  *  stay open with nobody showing its messages while the new one opened a second link, and messages would be lost. */
 object Session {
     var codec: Codec? = null
+    var asm2: Chain.Assembler2? = null
+    val w2Watch = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** review #18: burst frames that arrived before the model loaded (MainActivity drains it once codec is set). */
+    val early = ArrayList<Any>()
     var mesh: MeshBle? = null
+    var mqtt: com.gtc.burst.Mqtt? = null             // the radio's broker link, carried by the phone (proxy to client)
     var asm: Chain.Assembler? = null
     val asked = HashSet<String>()
     val log = StringBuilder()

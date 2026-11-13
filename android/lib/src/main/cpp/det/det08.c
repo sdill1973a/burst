@@ -59,6 +59,8 @@ int det08_parse(const uint8_t *frame, int flen, uint8_t check[2], uint32_t *n, i
         }
         if (!why) {
             if (v > DET08_MAX_TOKENS) why = "token count over the cap";
+            /* 10-30: same as the house det_codec — a tiny frame claiming thousands of tokens is refused before any step */
+            else if (v > DET08_TOK_PER_BYTE * (uint32_t)(flen - i) + DET08_TOK_SLACK) why = "token count implausible for the body";
             else { check[0] = frame[1]; check[1] = frame[2]; *n = v; *body_off = i; }
         }
     }

@@ -8,6 +8,7 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.gtc.burst.Wire2
 import com.gtc.burst.BurstLog
 import com.gtc.burst.BurstNative
 import com.gtc.burst.Chain
@@ -15,6 +16,7 @@ import com.gtc.burst.Codec
 import com.gtc.burst.Det
 import com.gtc.burst.History
 import com.gtc.burst.MeshBle
+import com.gtc.burst.Mqtt
 import org.json.JSONArray
 import java.io.File
 import kotlin.concurrent.thread
@@ -29,6 +31,9 @@ class MainActivity : AppCompatActivity() {
     private fun sha256(b: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(b)
     private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
     /** The 2-byte check a frame carries (a chain link's sits inside its body), as the reference receiver reads it. */
+    private class Early(val from: Long, val to: Long, val ch: Int, val port: Int, val payload: ByteArray)
+    private val early get() = Session.early
+
     private fun chk(p: ByteArray) = if (p[0] == 0x12.toByte()) p.copyOfRange(4, 6) else p.copyOfRange(1, 3)
 
     /** One link at a time, each waiting for its routing ACK; every delivered frame is indexed by its check (whole
@@ -47,7 +52,7 @@ class MainActivity : AppCompatActivity() {
                 BurstLog.content("burst", "TXWIRE " + Base64.encodeToString(p, Base64.NO_WRAP))
                 val err = if (dest == MeshBle.BROADCAST) 0.also { Thread.sleep(3000) } else m.awaitAck(id, 30000)
                 say("TX %d/%d id %08x -> %s: %s".format(i + 1, packets.size, id, label,
-                    when (err) { null -> "no ACK"; 0 -> "delivered"; else -> "error $err" }))
+                    when (err) { null -> if (m.localOnly) "sent, not confirmed (only my radio answered)" else "no ACK"; 0 -> "delivered"; else -> "error $err" }))
                 if (err == 0) { ok = true; break }
             }
             if (!ok) { say("Stopped: link ${i + 1} never got through"); return false }
@@ -55,27 +60,35 @@ class MainActivity : AppCompatActivity() {
         if (dest != MeshBle.BROADCAST && record) {
             val prefs = getSharedPreferences("burst", MODE_PRIVATE); val key = "sent_%08x".format(dest)
             val idx = org.json.JSONObject(prefs.getString(key, "{}")!!)
-            for (p in packets) idx.put(hex(chk(p)), text)
+            for (p in packets) idx.put(hex(if (Wire2.isWire2(p)) Wire2.askKey(p) else chk(p)), text)
+            if (packets[0][0] == Wire2.CHAIN) rememberChain2(dest, packets)
             while (idx.length() > 64) idx.remove(idx.keys().next())
             prefs.edit().putString(key, idx.toString()).apply()
         }
         return true
     }
 
+    private val RESEND_WINDOW_MS = 30 * 60 * 1000L
+
     /** ASK (0x06 + check) from a peer that refused one of my frames: resend that message on the BASE prime, once. */
     private fun answerAsk(from: Long, ch: Int, b: ByteArray) {
         val c = codec ?: return
         val prefs = getSharedPreferences("burst", MODE_PRIVATE); val key = "sent_%08x".format(from)
-        val idx = org.json.JSONObject(prefs.getString(key, "{}")!!); val k = hex(b.copyOfRange(1, 3))
+        val idx = org.json.JSONObject(prefs.getString(key, "{}")!!); val k = hex(b.copyOfRange(1, if (b[0] == Wire2.ASK) 5 else 3))
         val text = idx.optString(k, "")
         if (text.isEmpty()) { say("ASK from !%08x for $k: not one of mine".format(from)); return }
-        if (prefs.getBoolean("resent_$k", false)) { say("ASK for $k: already resent once"); return }
+        // Review #14 (2026-11-04): these flags were booleans that never cleared, so once a 2-byte check had been
+        // resent, a LATER message with the same check could never be resent again. Now each is a time; it lapses
+        // after RESEND_WINDOW_MS, which still blocks the burst of duplicate ASKs one refused chain produces.
+        val now = System.currentTimeMillis()
+        fun recent(key: String) = runCatching { now - prefs.getLong(key, 0L) < RESEND_WINDOW_MS }.getOrDefault(false)
+        if (recent("resent_$k")) { say("ASK for $k: already resent once"); return }
         // One resend per MESSAGE, not per link: a peer asks once for each refused link, and resending the whole part per
         // ASK multiplies airtime (13 asks = 13 full resends). The first ASK resends it; the rest are no-ops.
         val tk = "resent_text_" + hex(sha256(text.toByteArray()).copyOf(6))
         synchronized(Session) {
-            if (prefs.getBoolean(tk, false)) { prefs.edit().putBoolean("resent_$k", true).apply(); say("ASK for $k: its message is already being resent"); return }
-            prefs.edit().putBoolean("resent_$k", true).putBoolean(tk, true).apply()
+            if (recent(tk)) { prefs.edit().putLong("resent_$k", now).apply(); say("ASK for $k: its message is already being resent"); return }
+            prefs.edit().putLong("resent_$k", now).putLong(tk, now).apply()
         }
         val use08 = Codec.force08 || History.of(applicationContext, from).reads08()
         val packets = Chain.split(c, text, emptyList(), use08)
@@ -85,8 +98,86 @@ class MainActivity : AppCompatActivity() {
 
     /** I refused a 0x08 frame: ask the sender once for it again, without our history. */
     private fun askFor(from: Long, ch: Int, p: ByteArray) {
+        if (Wire2.isWire2(p)) {                                              // wire 2: the key is a hash of this exact frame
+            val k = hex(Wire2.askKey(p)); if (!asked.add(k)) return
+            thread { mesh?.let { m -> if (m.ready) { m.send(Wire2.askFrame(p), from, ch); say("ASK sent to !%08x for $k".format(from)) } } }
+            return
+        }
         val k = hex(chk(p)); if (!asked.add(k)) return
         thread { mesh?.let { m -> if (m.ready) { m.send(byteArrayOf(0x06) + chk(p), from, ch); say("ASK sent to !%08x for $k".format(from)) } } }
+    }
+
+    /** Keep a sent wire 2 chain's link frames, so a 0x13 can be answered with exactly the links that were lost. */
+    private fun rememberChain2(dest: Long, packets: List<ByteArray>) {
+        val prefs = getSharedPreferences("burst", MODE_PRIVATE); val key = "sent2_%08x".format(dest)
+        val idx = org.json.JSONObject(prefs.getString(key, "{}")!!); val mid = (packets[0][1].toInt() and 0xFF).toString()
+        idx.remove(mid)
+        idx.put(mid, org.json.JSONObject().put("t", System.currentTimeMillis()).put("links", org.json.JSONArray(packets.map { Wire2.hex(it) })).put("miss", org.json.JSONObject()))
+        while (idx.length() > 8) idx.remove(idx.keys().next())
+        prefs.edit().putString(key, idx.toString()).apply()
+    }
+
+    /** 0x13 from a peer missing links of a wire 2 chain of mine: resend just those, each at most 3 times. */
+    private fun answerMissing(from: Long, ch: Int, b: ByteArray) {
+        val prefs = getSharedPreferences("burst", MODE_PRIVATE); val key = "sent2_%08x".format(from)
+        val idx = org.json.JSONObject(prefs.getString(key, "{}")!!); val mid = (b[1].toInt() and 0xFF).toString()
+        val mask = (b[2].toInt() and 0xFF) or ((b[3].toInt() and 0xFF) shl 8)
+        val e = idx.optJSONObject(mid)
+        if (e == null || System.currentTimeMillis() - e.getLong("t") > RESEND_WINDOW_MS) { say("0x13 from !%08x for chain $mid: not one of mine".format(from)); return }
+        val links = e.getJSONArray("links"); val miss = e.getJSONObject("miss"); val out = ArrayList<ByteArray>()
+        for (i in 0 until links.length()) if (mask shr i and 1 == 1 && miss.optInt("$i", 0) < 3) { miss.put("$i", miss.optInt("$i", 0) + 1); out.add(Wire2.unhex(links.getString(i))) }
+        prefs.edit().putString(key, idx.toString()).apply()
+        say("0x13 from !%08x: resending %d link(s) of chain $mid".format(from, out.size))
+        if (out.isNotEmpty()) transmit(from, out, ch, "!%08x".format(from), "", record = false)
+    }
+
+    private val w2Chan = java.util.concurrent.ConcurrentHashMap<Long, Int>()
+
+    /** While a wire 2 chain is held, ask for its lost links; stops when nothing is held. */
+    private fun watchMissing() {
+        if (!Session.w2Watch.compareAndSet(false, true)) return
+        thread(isDaemon = true, name = "w2-missing") {
+            try {
+                while (true) {
+                    Thread.sleep(5000)
+                    val a = Session.asm2 ?: break
+                    for (n in a.due()) {
+                        val f = n.frame
+                        if (f == null) say("RX !%08x: INCOMPLETE message, got links %s of a chain".format(n.from, n.got))
+                        else mesh?.let { m -> if (m.ready) { m.send(f, n.from, w2Chan[n.from] ?: 0); say("Asked !%08x for missing links".format(n.from)) } }
+                    }
+                    if (a.idle) break
+                }
+            } finally { Session.w2Watch.set(false) }
+        }
+    }
+
+    private fun onChain2(c: Codec, from: Long, to: Long, ch: Int, payload: ByteArray) {
+        val app = applicationContext
+        val a = Session.asm2 ?: Chain.Assembler2 { f, t -> c.decodeW2Inner(f, t) }.also { Session.asm2 = it }
+        val hist = History.of(app, from)
+        w2Chan[from] = ch
+        val step = runCatching { a.add(from, payload, hist.candidates()) }.getOrElse { say("link undecodable: ${it.message}"); return }
+        when (step) {
+            is Chain.Step.Waiting -> { say("RX !%08x link %s".format(from, a.progress(from, payload))); if (to != MeshBle.BROADCAST) watchMissing() }
+            is Chain.Step.Refused -> say("RX !%08x: chain REFUSED — %s".format(from, step.why))
+            is Chain.Step.Ask -> { if (to != MeshBle.BROADCAST) thread { mesh?.let { m -> if (m.ready) for (f in step.frames) m.send(f, from, ch) } }; say("RX !%08x: %d link(s) refused, asked for a resend".format(from, step.frames.size)) }
+            is Chain.Step.Done -> {
+                if (step.whole.verified08) hist.markReads08()
+                hist.add(step.whole.text)
+                say("RX !%08x (%d packets, wire 2): %s".format(from, step.whole.total, step.whole.text), content = true)
+                BurstService.notify(app, "!%08x".format(from), step.whole.text, ch)
+            }
+        }
+    }
+
+    private fun onSingle2(c: Codec, from: Long, to: Long, ch: Int, payload: ByteArray) {
+        val app = applicationContext; val hist = History.of(app, from)
+        val d = runCatching { c.uncrunch2(payload, hist.candidates()) }.getOrElse { say("wire 2 undecodable: ${it.message}"); return }
+        if (d.verified) {
+            hist.add(d.text); hist.markReads08(); BurstService.notify(app, "!%08x".format(from), d.text, ch)
+            say("RX !%08x ch%d (%d B, wire 2): %s".format(from, ch, payload.size, d.text), content = true)
+        } else { if (to != MeshBle.BROADCAST) askFor(from, ch, payload); say("RX !%08x: REFUSED wire 2 — ${d.reason}".format(from)) }
     }
 
     /** A line for the on-screen log. [content] = it carries message text: logcat gets it only in debug/test builds. */
@@ -206,13 +297,30 @@ class MainActivity : AppCompatActivity() {
     /** The radio as a dot: grey off, amber connecting, green listening. Polled once a second while the screen shows. */
     private val tick = object : Runnable { override fun run() {
         val m = mesh
-        val (c, t) = when { m == null -> 0xFF6B7480.toInt() to "Off · tap"; !m.ready -> 0xFFE3A008.toInt() to "Connecting"; else -> 0xFF2EA043.toInt() to "Listening" }
+        val (c, t) = when { m == null -> 0xFF6B7480.toInt() to "Off · tap"; !m.ready -> 0xFFE3A008.toInt() to "Connecting"; else -> 0xFF2EA043.toInt() to "Listening · tap to release" }
         (findViewById<android.view.View>(R.id.dot).background.mutate() as android.graphics.drawable.GradientDrawable).setColor(c)
         findViewById<TextView>(R.id.statusText).text = t
         if (Session.typing(peerId()) != shownTyping) drawChat()     // the dots go up or time out
         ui.postDelayed(this, 1000)
     } }
     private val sink: (String) -> Unit = { s -> runOnUiThread { log.append(s + "\n") } }
+
+    /** Carry the radio's MQTT over the phone's network when the radio asks for it (MQTT on + proxy to client on) and a
+     *  broker is set (prefs mqtt_host / mqtt_port / mqtt_user / mqtt_pass, set once per phone). Uplink and downlink both pass
+     *  through untouched: the radio already encrypted them. */
+    private fun proxy(prefs: android.content.SharedPreferences) {
+        val host = prefs.getString("mqtt_host", null)?.takeIf { it.isNotBlank() } ?: return
+        val m = mesh ?: return
+        Session.mqtt?.close(); Session.mqtt = null
+        m.onProxy = { t, d, r -> if (Session.mqtt?.publish(t, d, r) != true) say("MQTT up-link dropped (broker not connected): $t") }
+        thread {
+            repeat(240) { if (!m.ready) Thread.sleep(500) }
+            if (!m.ready || mesh !== m) return@thread
+            if (!m.mqttEnabled || !m.mqttProxy) { say("Radio MQTT proxy is off: nothing to carry"); return@thread }
+            Session.mqtt = Mqtt(host, prefs.getInt("mqtt_port", 1883), prefs.getString("mqtt_user", "") ?: "",
+                prefs.getString("mqtt_pass", "") ?: "", listOf("${m.mqttRoot}/2/e/#"), ::say) { t, d, r -> if (mesh === m) m.proxyDown(t, d, r) }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -225,7 +333,11 @@ class MainActivity : AppCompatActivity() {
         Chat.onChange = redraw
         val settings = findViewById<android.view.View>(R.id.settings)
         findViewById<TextView>(R.id.gear).setOnClickListener { settings.visibility = if (settings.visibility == android.view.View.VISIBLE) android.view.View.GONE else android.view.View.VISIBLE }
-        findViewById<android.view.View>(R.id.status).setOnClickListener { if (mesh?.ready != true) findViewById<Button>(R.id.connect).performClick() }
+        // The status is the listen switch: off → connect; on → let go of the radio so the Meshtastic app can use it
+        findViewById<android.view.View>(R.id.status).setOnClickListener {
+            if (mesh == null) findViewById<Button>(R.id.connect).performClick()
+            else { BurstService.release(this); window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+        }
         val input = findViewById<EditText>(R.id.input)
         val send = findViewById<Button>(R.id.send)
         val radio = findViewById<EditText>(R.id.radio); val toF = findViewById<EditText>(R.id.to); val chF = findViewById<EditText>(R.id.chan)
@@ -271,7 +383,8 @@ class MainActivity : AppCompatActivity() {
             mesh = MeshBle(app, ::say) { from, to, ch, port, payload ->
                 // Decoding runs the model (seconds): never on the BLE pump thread. One worker keeps arrival order.
                 Session.decode.execute { runCatching { onData(from, to, ch, port, payload) }.onFailure { say("RX handler error: ${it.javaClass.simpleName}") } }
-            }.also { it.connect(radio.text.toString().trim()) }
+            }.also { m -> m.onReady = { thread { sendHello(m) } }; m.connect(radio.text.toString().trim()) }
+            proxy(prefs)
             // test hook: send once the radio is ready. Needs a fresh "nonce": Android re-delivers the launch intent when it
             // re-creates the app, and without this the same test message would go out again on every re-create.
             val nonce = if (hooks) intent.getStringExtra("nonce") else null
@@ -299,6 +412,9 @@ class MainActivity : AppCompatActivity() {
             val c = Codec(assets.open("codes.bin").readBytes(), assets.open("tables.json").bufferedReader().readText())
             codec = c
             say("Model loaded in ${System.currentTimeMillis() - t0} ms")
+            val held = synchronized(early) { early.filterIsInstance<Early>().also { early.clear() } }
+            if (held.isNotEmpty()) say("decoding ${held.size} message(s) that arrived while loading")
+            held.forEach { e -> Session.decode.execute { runCatching { onData(e.from, e.to, e.ch, e.port, e.payload) } } }
             if (hooks && intent.getBooleanExtra("selftest", false)) {      // test hook only: an everyday open goes straight to the chat
                 selfTest(c)
                 // the 0x08 selftest costs ~26 s on a current phone: only with the Force-0x08 toggle on or `--ez selftest08 true`
@@ -323,8 +439,8 @@ class MainActivity : AppCompatActivity() {
                     say("Not sent: \"$t\" is not a node id (use !hex, like !1a2b3c4d, or all)"); input.setText(text); return@setOnClickListener }
             thread { sendText(dest, text, chF.text.toString().toIntOrNull() ?: 1) }
         }
-        // A reply typed into a message notice goes out the same way, on the channel in the Ch field
-        Session.reply = { dest, text, _ -> sendText(dest, text, chF.text.toString().toIntOrNull() ?: 1) }
+        // review #13 (2026-11-04): the reply goes back on the channel the message came in on (the notice carries it).
+        Session.reply = { dest, text, ch -> sendText(dest, text, ch) }
         if (hooks && adminReceiver == null) registerAdmin()
     }
 
@@ -349,14 +465,28 @@ class MainActivity : AppCompatActivity() {
         if (port == 6) BurstLog.content("burst", "ADMINRX " + Base64.encodeToString(payload, Base64.NO_WRAP))
         if (port != 256) return
         val c = codec
+        // review #18 (2026-11-04): before the model finished loading, codec was null and a message fell through as
+        // "not a burst" — lost. Hold burst frames until it loads; they are decoded in arrival order right after.
+        if (c == null && payload.isNotEmpty() && (payload[0].toInt() and 0xFF) in setOf(0x00, 0x03, 0x08, 0x12, 0x0E, 0x14)) {
+            synchronized(early) { if (early.size < 64) early.add(Early(from, to, ch, port, payload)) }
+            say("RX !%08x: held until the model loads".format(from)); return
+        }
         if (payload.size == 1 && payload[0] == 0x09.toByte()) {               // TYPING: the peer's mind is on it now
             Session.typingFrom("!%08x".format(from)); Chat.onChange?.invoke("!%08x".format(from)); return
+        }
+        if (payload.isNotEmpty() && (payload[0] == 0x0C.toByte() || payload[0] == 0x0D.toByte())) {   // CATCH-UP
+            if (to != MeshBle.BROADCAST) onCatchUp(from, ch, payload)
+            return
         }
         if (payload.isNotEmpty() && payload[0] != 0x06.toByte()) Session.typingDone("!%08x".format(from))
         if (payload.size >= 3 && payload[0] == 0x06.toByte()) {               // they refused a frame of mine
             if (to != MeshBle.BROADCAST) thread { answerAsk(from, ch, payload) }
             return
         }
+        if (payload.size == 5 && payload[0] == Wire2.ASK) { if (to != MeshBle.BROADCAST) thread { answerAsk(from, ch, payload) }; return }
+        if (payload.size == 4 && payload[0] == Wire2.MISSING) { if (to != MeshBle.BROADCAST) thread { answerMissing(from, ch, payload) }; return }
+        if (c != null && payload.isNotEmpty() && payload[0] == Wire2.CHAIN) { onChain2(c, from, to, ch, payload); return }
+        if (c != null && payload.size >= 6 && payload[0] == Wire2.CODEC) { onSingle2(c, from, to, ch, payload); return }
         if (c != null && payload.isNotEmpty() && payload[0] == 0x12.toByte()) {
             val a = asm ?: Chain.Assembler(c).also { asm = it }
             val hist = History.of(app, from)
@@ -364,8 +494,11 @@ class MainActivity : AppCompatActivity() {
             if (whole == null) { say("RX !%08x link %s".format(from, a.progress(from, payload))); return }
             if (whole.verified08) hist.markReads08()                 // it reads the det codec: I may send 0x08 to it
             if (whole.allVerified) hist.add(whole.text)
+            // review #5 (2026-11-04): a chain with a refused link was silently lost. Every link the sender sent is
+            // indexed by its own check, so asking with THIS link's check gets the whole message resent.
+            else if (to != MeshBle.BROADCAST) askFor(from, ch, payload)
             say("RX !%08x (%d packets%s): %s".format(from, whole.total, if (whole.verified08) ", 0x08" else "", whole.text), content = true)
-            if (whole.allVerified) BurstService.notify(app, "!%08x".format(from), whole.text)
+            if (whole.allVerified) BurstService.notify(app, "!%08x".format(from), whole.text, ch)   // review #13: its own channel
             return
         }
         val hist = History.of(app, from)
@@ -374,15 +507,59 @@ class MainActivity : AppCompatActivity() {
             runCatching { c.uncrunch(payload, hist.candidates()).let {
                 if (it.verified) {
                     hist.add(it.text)
-                    BurstService.notify(app, "!%08x".format(from), it.text)
+                    BurstService.notify(app, "!%08x".format(from), it.text, ch)
                     if (it.codec == 8) hist.markReads08()
                     "${it.text}  [${if (it.codec == 8) "0x08, history ${it.tail?.size ?: 0}" else "history ${if (cb == 0x03) payload[5].toInt() and 0xFF else 0}"}]"
                 } else if (it.codec == 8) { askFor(from, ch, payload); "(REFUSED 0x08 — ${it.reason}; asked for a resend)" }
-                else "(UNVERIFIED — check failed) " + it.text } }
+                else { if (to != MeshBle.BROADCAST) askFor(from, ch, payload)        // review #5: refused 0x03 single → ASK
+                       "(UNVERIFIED — check failed; text withheld, ${it.text.length} chars; asked for a resend)" } } }   // review #6: a failed check is not shown
                 .getOrElse { "<undecodable: ${it.message}>" }
             else "<${payload.size} bytes, not a burst>"
         say("RX !%08x ch%d (%d B): %s".format(from, ch, payload.size, text), content = true)
         BurstLog.content("burst", "RXWIRE " + Base64.encodeToString(payload, Base64.NO_WRAP))
+    }
+
+    /** CATCH-UP ON RECONNECT (his design 11-06, PLAN.md): on every radio-ready, say HELLO with my last checks; the far end
+     *  finds the newest entry we both hold, trims to it, and answers ALIGNED; I trim to the same entry. Drift is fixed
+     *  before the next message, so nothing is refused for it. What either side trims is shown, never silently lost. */
+    private val helloOut = java.util.concurrent.ConcurrentHashMap<Long, List<ByteArray>>()
+
+    private fun sendHello(m: MeshBle) {
+        val dest = runOnUiThreadBlocking { peerId() }.removePrefix("!").toLongOrNull(16)?.takeIf { it in 1..0xFFFFFFFEL } ?: return
+        val ch = runCatching { runOnUiThreadBlocking { findViewById<EditText>(R.id.chan).text.toString().toIntOrNull() } }.getOrNull() ?: 0
+        val checks = History.of(applicationContext, dest).helloChecks()
+        helloOut[dest] = checks
+        Thread.sleep(1500)                                                    // let the radio settle after config
+        if (!m.ready) return
+        m.send(byteArrayOf(0x0C, checks.size.toByte()) + checks.fold(ByteArray(0)) { a, c -> a + c }, dest, ch)
+        say("Catch-up: HELLO to !%08x (%d checks)".format(dest, checks.size))
+    }
+
+    private fun onCatchUp(from: Long, ch: Int, b: ByteArray) {
+        val hist = History.of(applicationContext, from)
+        if (b[0] == 0x0C.toByte()) {                                          // their HELLO: align, answer
+            val n = if (b.size > 1) b[1].toInt() and 0xFF else 0
+            val listed = (0 until n).filter { b.size >= 4 + 2 * it }.map { b.copyOfRange(2 + 2 * it, 4 + 2 * it) }
+            val (k, j) = History.alignAnchor(listed, hist.snapshot())
+            val gone = hist.trimTo(j + 1)
+            mesh?.let { m -> if (m.ready) m.send(byteArrayOf(0x0D, k.toByte()) + (if (k > 0) listed[k - 1] else ByteArray(0)), from, ch) }
+            say("Catch-up: HELLO from !%08x -> aligned at %d%s".format(from, k, if (gone.isEmpty()) "" else "; set aside: " + gone.joinToString(" | ") { it.take(60) }))
+        } else {                                                              // ALIGNED: their answer to my HELLO
+            val sent = helloOut.remove(from) ?: run { say("Catch-up: ALIGNED from !%08x with no HELLO out — ignored".format(from)); return }
+            val k = if (b.size > 1) b[1].toInt() and 0xFF else 0
+            if (k > 0 && (k > sent.size || b.size < 4 || !b.copyOfRange(2, 4).contentEquals(sent[k - 1]))) {
+                say("Catch-up: ALIGNED from !%08x does not match my HELLO — ignored".format(from)); return
+            }
+            val base = maxOf(0, hist.size() - sent.size)
+            val gone = hist.trimTo(if (k > 0) base + k else 0)
+            say("Catch-up with !%08x: aligned at %d%s".format(from, k, if (gone.isEmpty()) ", nothing drifted" else "; set aside: " + gone.joinToString(" | ") { it.take(60) }))
+        }
+    }
+
+    private fun <T> runOnUiThreadBlocking(f: () -> T): T {
+        val q = java.util.concurrent.ArrayBlockingQueue<Result<T>>(1)
+        runOnUiThread { q.put(runCatching(f)) }
+        return q.take().getOrThrow()
     }
 
     /** Split on our shared history, send link by link, and on delivery add it to that history. True = delivered. */

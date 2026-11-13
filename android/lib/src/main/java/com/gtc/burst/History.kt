@@ -29,6 +29,20 @@ class History private constructor(ctx: Context, peer: Long) {
         prefs.edit().putString(key, JSONArray(items).toString()).apply()
     }
 
+    /** CATCH-UP (his design 11-06): the HELLO frame [0x0C][n][n x 2-byte check], my last HELLO_N entries oldest->newest. */
+    @Synchronized fun helloChecks(): List<ByteArray> = items.takeLast(HELLO_N).map { Codec.sha2(it.toByteArray()) }
+
+    /** Cut my history to its first [keep] entries; what goes is returned (the side log), never silently lost. */
+    @Synchronized fun trimTo(keep: Int): List<String> {
+        val gone = items.drop(maxOf(0, keep)).toList()
+        while (items.size > maxOf(0, keep)) items.removeAt(items.size - 1)
+        prefs.edit().putString(key, JSONArray(items).toString()).apply()
+        return gone
+    }
+
+    @Synchronized fun size(): Int = items.size
+    @Synchronized fun snapshot(): List<String> = items.toList()
+
     fun reads08(): Boolean = prefs.getBoolean("$key.reads08", false)
     fun markReads08() { if (!reads08()) prefs.edit().putBoolean("$key.reads08", true).apply() }
 
@@ -39,6 +53,20 @@ class History private constructor(ctx: Context, peer: Long) {
         private val cache = java.util.concurrent.ConcurrentHashMap<Long, History>()
         /** The one History for [peer]: every caller shares it, so @Synchronized guards the same list. */
         fun of(ctx: Context, peer: Long): History = cache.getOrPut(peer) { History(ctx.applicationContext, peer) }
+
+        const val HELLO_N = 16
+
+        /** Mirror of burst_rx.align_anchor: (k, j) — k = 1-based index into [listed] of the newest entry both hold, j its
+         *  index in [mine]; (0, -1) if nothing is shared. A match must also agree on up to 2 entries before it. */
+        fun alignAnchor(listed: List<ByteArray>, mine: List<String>): Pair<Int, Int> {
+            val mc = mine.map { Codec.sha2(it.toByteArray()) }
+            for (k in listed.size downTo 1) for (j in mc.indices.reversed()) {
+                if (!mc[j].contentEquals(listed[k - 1])) continue
+                val need = minOf(3, k, j + 1)
+                if ((0 until need).all { d -> mc[j - d].contentEquals(listed[k - 1 - d]) }) return k to j
+            }
+            return 0 to -1
+        }
 
         fun candidates(items: List<String>): List<List<String>> {
             val out = LinkedHashSet<List<String>>()

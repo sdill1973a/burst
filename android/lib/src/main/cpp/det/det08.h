@@ -17,6 +17,8 @@ extern "C" {
 #endif
 
 #define DET08_CODEC_BYTE 0x08
+#define DET08_TOK_PER_BYTE 16u      /* his 334 real frames: max 2.9 tok/byte; 5x headroom */
+#define DET08_TOK_SLACK 64u
 #define DET08_MAX_TOKENS 2048          /* a flipped varint byte must not become a million model steps */
 
 /* bytes the encoder may need for nm tokens (header + worst-case 3 B/token + flush slack) */

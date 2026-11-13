@@ -11,6 +11,17 @@ all, with no service, subscription or internet behind it. **Exact from the first
 you use it.** The phone takes a few seconds to think, but it learns the conversation, so it sends less and spends less
 time on the air.
 
+## New in 0.2.0 — wire 2
+
+- **Each message names the history it was packed against** and carries a 3-byte check. If the two ends have drifted,
+  the message is refused and resent on the plain base, never shown wrong.
+- **Long messages are one message.** Every link of a chain carries a whole-message check, so links from two messages
+  can't be spliced together. A missing link is asked for by number and resent.
+- **Resend requests use a 4-byte key of the exact frame**, so an ASK can't pick up the wrong message.
+- Old frames are still received, and a phone only sends wire 2 to a peer it has heard speak wire 2.
+- Tested on the air (two Meshtastic radios, LONG_FAST): an 11-part, 5,332-byte paste arrived exact; a 95-character
+  reply went in 8 bytes.
+
 ## What you get
 
 **Longer messages in one packet.** A Meshtastic packet holds about 200 characters. With Burst the same packet carries

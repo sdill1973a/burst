@@ -3,7 +3,7 @@
 #
 # ONE-TIME SETUP on the owner's PyPI account (pending publisher, before the first release):
 #   https://pypi.org/manage/account/publishing/
-#     PyPI project name: burst-codec   Owner: sdill1973a   Repository: burst
+#     PyPI project name: burst-codec   Owner and repository: this one
 #     Workflow name:     release.yml   Environment: pypi
 on:
   push:

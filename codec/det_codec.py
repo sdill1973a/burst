@@ -30,6 +30,7 @@ except ImportError:                                 # source tree: open_codec.py
     import open_codec
 
 CODEC_BYTE = 0x08
+TOK_PER_BYTE, TOK_SLACK = 16, 64  # his 334 real frames: max 2.9 tok/byte, one repeat 42 tok in 2 B; 5x headroom
 MAX_TOKENS = 2048                                   # a flipped varint byte must not become a million model steps
 MAX_TAILS = 6                                       # candidate histories tried, newest first
 TOTAL_BITS = 24
@@ -209,6 +210,8 @@ def uncrunch(frame, model, tails=(), max_tails=MAX_TAILS):
     chk = bytes(frame[1:3])
     n, i = _rv(frame, 3)
     body = bytes(frame[i:])
+    if n > TOK_PER_BYTE * len(body) + TOK_SLACK:     # 10-30 review: a 6-byte frame claiming 2,048 tokens = minutes of evals
+        raise DecodeFailed(f"token count {n} implausible for {len(body)} body bytes")
     cands = [list(t)[-open_codec.TAIL_N:] for t in list(tails)[:max_tails]]
     if [] not in cands:
         cands.append([])
@@ -220,6 +223,95 @@ def uncrunch(frame, model, tails=(), max_tails=MAX_TAILS):
         if _check(text) == chk:
             return text
     raise DecodeFailed("plaintext check failed under every candidate history: wrong decode, not shown")
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# wire 2 (additive: 0x08/0x0A/0x12 above are unchanged and always still decode)
+#   single  [0x0E][tail id][3-byte check][varint n][range-coder bytes]     carried link: same with 0x0F
+#   chain   [0x14][mid][idx<<4|total-1][3-byte whole-message check, link 0 ONLY][inner frame]
+# tail id = sha256(the exact prime text)[0], so the receiver decodes only candidates carrying that id (one, unless a
+# 1/256 collision). The whole-message check is what stops links of two messages assembling into one nobody sent.
+# ---------------------------------------------------------------------------------------------------------------------
+CODEC_V2, CARRY_V2, CHAIN_V2 = 0x0E, 0x0F, 0x14
+
+
+def check3(text):
+    return hashlib.sha256(text.encode()).digest()[:3]
+
+
+def tail_id(tail):
+    tail = list(tail)[-open_codec.TAIL_N:]
+    return hashlib.sha256(open_codec.prime_for(tail).encode()).digest()[0]
+
+
+def ask_key(frame):
+    """the wider ASK/resend key: both ends hold these exact frame bytes, so no check collision can pick another message"""
+    return hashlib.sha256(bytes(frame)).digest()[:4]
+
+
+def crunch2(text, model, tail=(), byte=CODEC_V2):
+    tail = list(tail)[-open_codec.TAIL_N:]
+    toks = model.tokenize(text)
+    if model.detokenize(toks) != text:
+        raise ValueError("text does not survive tokenize/detokenize; not sendable as wire 2")
+    if len(toks) > MAX_TOKENS:
+        raise ValueError(f"{len(toks)} tokens is over the cap of {MAX_TOKENS}")
+    enc = Encoder()
+    lg = model.reset(model.tokenize(open_codec.prime_for(tail)))
+    for t in toks:
+        enc.put_logits(lg, t)
+        lg = model.step(t)
+    head = bytearray([byte, tail_id(tail)]) + check3(text); _wv(len(toks), head)
+    return bytes(head) + enc.finish()
+
+
+def uncrunch2(frame, model, tails=()):
+    """wire-2 frame -> text, or DecodeFailed. Only candidates whose tail id matches are decoded; base prime is a candidate."""
+    if not frame or frame[0] not in (CODEC_V2, CARRY_V2):
+        raise DecodeFailed("not a wire-2 frame")
+    if len(frame) < 6:
+        raise DecodeFailed("frame too short")
+    tid, chk = frame[1], bytes(frame[2:5])
+    n, i = _rv(frame, 5)
+    body = bytes(frame[i:])
+    if n > TOK_PER_BYTE * len(body) + TOK_SLACK:
+        raise DecodeFailed(f"token count {n} implausible for {len(body)} body bytes")
+    cands = [list(t)[-open_codec.TAIL_N:] for t in tails]
+    if [] not in cands:
+        cands.append([])
+    for tail in [t for t in cands if tail_id(t) == tid]:
+        try:
+            text = _decode_with(body, n, model, tail)
+        except (ValueError, UnicodeError, RuntimeError):
+            continue
+        if check3(text) == chk:
+            return text
+    raise DecodeFailed("wire 2: no candidate history passed the check: not shown")
+
+
+def link2(mid, idx, total, inner, whole=None):
+    if not 1 <= total <= 16 or not 0 <= idx < total or (idx == 0) != (whole is not None):
+        raise ValueError("bad chain link: link 0, and only link 0, carries the whole-message check")
+    return bytes([CHAIN_V2, mid, (idx << 4) | (total - 1)]) + (bytes(whole) if idx == 0 else b"") + bytes(inner)
+
+
+def parse_link2(b):
+    """-> (mid, idx, total, whole or None, inner frame)"""
+    if len(b) < 4 or b[0] != CHAIN_V2:
+        raise DecodeFailed("not a wire-2 chain link")
+    idx, total = b[2] >> 4, (b[2] & 0x0F) + 1
+    at = 6 if idx == 0 else 3
+    if idx >= total or len(b) <= at:
+        raise DecodeFailed("malformed wire-2 chain link")
+    return b[1], idx, total, (bytes(b[3:6]) if idx == 0 else None), bytes(b[at:])
+
+
+def join2(texts, whole):
+    """the assembled message, only if the whole-message check from link 0 passes"""
+    text = "".join(texts)
+    if check3(text) != bytes(whole):
+        raise DecodeFailed("whole-message check failed: links do not belong to one message, not shown")
+    return text
 
 
 # ---------------------------------------------------------------------------------------------------------------------

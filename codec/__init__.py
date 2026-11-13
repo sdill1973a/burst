@@ -11,7 +11,7 @@ _HERE = _os.path.dirname(_os.path.abspath(__file__))
 if _HERE not in _sys.path:
     _sys.path.insert(0, _HERE)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # libdetlm.so (the bit-identical engine det_codec loads) is built once, here, with the same determinism flags as
 # Makefile.detlm — never -ffast-math, never -march=native, -ffp-contract=off is load-bearing. Needs a C compiler.

@@ -45,19 +45,43 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
     private var fromR: BluetoothGattCharacteristic? = null
     @Volatile var myNode: Long = 0; private set
     @Volatile var ready = false; private set
-    private val acks = java.util.concurrent.ConcurrentHashMap<Long, Int>()   // packet id -> routing error (0 = delivered)
+    /** Every time the radio becomes ready (first connect AND every reconnect): the catch-up HELLO hangs here. */
+    @Volatile var onReady: (() -> Unit)? = null
+    private val acks = java.util.concurrent.ConcurrentHashMap<Long, Int>()   // packet id -> routing error FROM THE FAR END
+    // 2026-11-06 road test: an ACK from our OWN radio (relay heard / handed to MQTT) said "delivered" on five messages the
+    // house had dropped. Only an ACK whose sender is the destination counts now; a local one is kept apart -> "sent".
+    private val localAcks = java.util.concurrent.ConcurrentHashMap<Long, Int>()
 
-    /** Wait for the far end's routing ACK of packet [id]. Returns the error code (0 = delivered), or null on timeout. */
+    /** The radio's MQTT module, as it reports it at connect (ModuleConfig.mqtt): with proxy_to_client on, the radio hands
+     *  its broker traffic to the phone as MqttClientProxyMessage (FromRadio 14) and takes the downlink back (ToRadio 6). */
+    @Volatile var mqttEnabled = false; private set
+    @Volatile var mqttProxy = false; private set
+    @Volatile var mqttRoot = "msh"; private set
+    @Volatile var onProxy: ((topic: String, data: ByteArray, retained: Boolean) -> Unit)? = null
+
+    /** Broker → radio: one message the phone received on the radio's behalf. */
+    fun proxyDown(topic: String, data: ByteArray, retained: Boolean) {
+        val m = Pb().bytes(1, topic.toByteArray()).bytes(2, data).varint(4, if (retained) 1 else 0).out()
+        ops.put(Op.W(Pb().bytes(6, m).out()))
+    }
+
+    /** Wait for the FAR END's routing ACK of packet [id]. Returns the error code (0 = delivered), or null on timeout.
+     *  [localOnly] is set when the only ACK seen came from our own radio: sent, but nobody confirmed it. */
+    @Volatile var localOnly = false; private set
     fun awaitAck(id: Long, ms: Long): Int? {
+        localOnly = false
         val end = System.currentTimeMillis() + ms
-        while (System.currentTimeMillis() < end) { acks.remove(id)?.let { return it }; Thread.sleep(200) }
+        while (System.currentTimeMillis() < end) { acks.remove(id)?.let { localAcks.remove(id); return it }; Thread.sleep(200) }
+        localOnly = localAcks.remove(id) != null
         return null
     }
 
     // GATT allows one operation in flight; every op goes through this queue and waits for its callback.
     private sealed class Op { class W(val b: ByteArray) : Op(); object R : Op() }
     private val ops = LinkedBlockingQueue<Op>()
-    private val done = LinkedBlockingQueue<ByteArray>()          // cannot hold null: a write completion is WROTE
+    // review #10 (2026-11-04): completions are tagged W/R. Untagged, a write's late callback (after a timeout) was taken
+    // as the next READ's value (empty → drain stopped) and a read's late payload as the next WRITE's completion (lost).
+    private val done = LinkedBlockingQueue<Pair<Char, ByteArray>>()   // cannot hold null: a write completion is WROTE
     private val WROTE = ByteArray(0)
 
     fun bondedNames(): List<String> =
@@ -91,7 +115,7 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
             } else if (state == BluetoothProfile.STATE_DISCONNECTED) {
                 ready = false; say("BLE disconnected (status $status)")
                 g.close(); if (gatt === g) gatt = null
-                ops.clear(); done.put(WROTE)                            // free a pump stuck waiting on a callback
+                ops.clear(); done.put('X' to WROTE)                     // free a pump stuck waiting on a callback (either kind)
                 val w = wanted
                 if (w != null) { say("retrying in 5 s (is the Meshtastic app holding the radio?)"); main.postDelayed({ if (wanted == w && gatt == null) connect(w) }, 5000) }
             }
@@ -119,10 +143,10 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
         }
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) say("write failed ($status)")
-            done.put(WROTE)
+            done.put('W' to WROTE)
         }
         override fun onCharacteristicRead(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
-            done.put(value)
+            done.put('R' to value)
         }
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
             if (c.uuid == FROMNUM) ops.put(Op.R)
@@ -130,8 +154,19 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
     }
 
     /** Wait for the GATT callback of the op in flight; null = the radio stopped answering. */
-    private fun awaitOp(): ByteArray? = done.poll(OP_TIMEOUT_S, java.util.concurrent.TimeUnit.SECONDS)
-        ?: null.also { say("Radio stopped answering (no GATT callback in $OP_TIMEOUT_S s)") }
+    private fun awaitOp(kind: Char): ByteArray? {
+        val end = System.currentTimeMillis() + OP_TIMEOUT_S * 1000
+        while (true) {
+            val left = end - System.currentTimeMillis()
+            val got = if (left > 0) done.poll(left, java.util.concurrent.TimeUnit.MILLISECONDS) else null
+            if (got == null) { say("Radio stopped answering (no GATT callback in $OP_TIMEOUT_S s)"); return null }
+            if (got.first == 'X') return null                     // disconnect: stop waiting
+            if (got.first == kind) return got.second
+            if (got.first == 'R' && got.second.isNotEmpty())      // a late READ payload is a real packet: keep it
+                try { handleFromRadio(got.second) } catch (e: Exception) { say("Dropped a malformed packet (${e.javaClass.simpleName})") }
+            // a late WRITE completion while reading: stale, skip it and keep waiting for ours
+        }
+    }
 
     private fun pump() {
         val g = gatt ?: return                                          // one pump per connection: it ends when its gatt does
@@ -140,11 +175,11 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
             val op = ops.poll(1, java.util.concurrent.TimeUnit.SECONDS) ?: continue
             if (gatt !== g) { ops.put(op); return }
             when (op) {
-                is Op.W -> { g.writeCharacteristic(tr, op.b, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT); awaitOp() }
+                is Op.W -> { g.writeCharacteristic(tr, op.b, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT); awaitOp('W') }
                 is Op.R -> {                                   // drain: read until the radio returns an empty value
                     while (true) {
                         if (!g.readCharacteristic(fr)) break
-                        val v = awaitOp() ?: break
+                        val v = awaitOp('R') ?: break
                         if (v.isEmpty()) break
                         // A malformed or hostile packet is dropped; it must never take the process down.
                         try { handleFromRadio(v) } catch (e: Exception) { say("Dropped a malformed packet (${e.javaClass.simpleName})") }
@@ -163,7 +198,18 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
         val f = Pb.parse(b)
         (f[3] as? ByteArray)?.let { my -> (Pb.parse(my)[1] as? Long)?.let { myNode = it; say("Radio node !%08x".format(myNode)) } }
         (f[4] as? ByteArray)?.let { ni -> Pb.parse(ni).let { n -> nodeName(n[1] as? Long, n[2] as? ByteArray) } }   // node list
-        f[7]?.let { if (!ready) { ready = true; say("Radio ready") } }
+        (f[9] as? ByteArray)?.let { mc -> (Pb.parse(mc)[1] as? ByteArray)?.let { mq ->       // ModuleConfig.mqtt
+            val q = Pb.parse(mq)
+            mqttEnabled = (q[1] as? Long ?: 0L) != 0L; mqttProxy = (q[9] as? Long ?: 0L) != 0L
+            (q[8] as? ByteArray)?.let { r -> if (r.isNotEmpty()) mqttRoot = String(r) }
+            say("Radio MQTT: ${if (mqttEnabled) "on" else "off"}, proxy to phone ${if (mqttProxy) "on" else "off"}, root $mqttRoot")
+        } }
+        (f[14] as? ByteArray)?.let { pm ->                                   // MqttClientProxyMessage: radio → broker
+            val q = Pb.parse(pm)
+            (q[1] as? ByteArray)?.let { t -> onProxy?.invoke(String(t), q[2] as? ByteArray ?: ByteArray(0), (q[4] as? Long ?: 0L) != 0L) }
+            return
+        }
+        f[7]?.let { if (!ready) { ready = true; say("Radio ready"); onReady?.invoke() } }
         if (!ready) return
         val pkt = (f[2] as? ByteArray)?.let { Pb.parse(it) } ?: return
         android.util.Log.d("burst", "pkt fields ${pkt.keys} from=${pkt[1]} decoded=${pkt[4] != null}")
@@ -172,9 +218,26 @@ class MeshBle(private val ctx: Context, private val say: (String) -> Unit,
         if (port == 4) nodeName(pkt[1] as? Long, dec[2] as? ByteArray)   // NODEINFO_APP: a peer announcing its name
         if (port == 5) {                                             // ROUTING_APP: Routing{error_reason=3}, request_id = our packet id
             val rid = dec[6] as? Long ?: return
-            acks[rid] = ((dec[2] as? ByteArray)?.let { Pb.parse(it)[3] as? Long } ?: 0L).toInt(); return
+            val err = ((dec[2] as? ByteArray)?.let { Pb.parse(it)[3] as? Long } ?: 0L).toInt()
+            val from = pkt[1] as? Long ?: 0L
+            if (from == myNode || from == 0L) localAcks[rid] = err else acks[rid] = err; return
+        }
+        // Review #7 (2026-11-04): a retried packet reached onData twice, so it was shown and remembered twice and the
+        // histories diverged. The mesh packet id (MeshPacket field 6) is the same on every retry and new for every
+        // message, so (from, id) is the identity — same rule as the house (#8). Packets without an id pass through.
+        val pid = (pkt[6] as? Long) ?: 0L
+        if (pid != 0L) {
+            val key = "${pkt[1]}:$pid"
+            synchronized(seenPkts) {
+                if (seenPkts.containsKey(key)) { android.util.Log.d("burst", "duplicate packet $key dropped"); return }
+                seenPkts[key] = true
+            }
         }
         onData(pkt[1] as? Long ?: 0L, pkt[2] as? Long ?: 0L, (pkt[3] as? Long ?: 0L).toInt(), port, dec[2] as? ByteArray ?: ByteArray(0))
+    }
+
+    private val seenPkts = object : java.util.LinkedHashMap<String, Boolean>(512, 0.75f, false) {
+        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, Boolean>?) = size > 512
     }
 
     /** Minimal protobuf writer/reader: varint, fixed32, length-delimited. Reader keeps the LAST value per field.

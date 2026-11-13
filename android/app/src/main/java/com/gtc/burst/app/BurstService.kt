@@ -18,9 +18,12 @@ class BurstService : Service() {
     private var lock: PowerManager.WakeLock? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == RELEASE) { release(this); return START_NOT_STICKY }
         channels(this)
+        val stop = PendingIntent.getService(this, 2, Intent(this, BurstService::class.java).setAction(RELEASE), PendingIntent.FLAG_IMMUTABLE)
         val n = Notification.Builder(this, HOLD).setSmallIcon(R.mipmap.ic_launcher_round)
-            .setContentTitle("Burst is listening").setOngoing(true)
+            .setContentTitle("Burst is listening").setContentText("Release the radio to use the Meshtastic app").setOngoing(true)
+            .addAction(Notification.Action.Builder(null, "Release radio", stop).build())
             .setContentIntent(open(this)).build()
         // Android 14+ refuses a connectedDevice service until Bluetooth is granted, and the
         // first-run model download starts this service before the user has answered that prompt. Requesting
@@ -41,6 +44,17 @@ class BurstService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        private const val RELEASE = "com.gtc.burst.RELEASE"
+
+        /** Let go of the radio: close the BLE link and stop the service, so another app (Meshtastic) can attach.
+         *  Opening Burst, or tapping its status, connects again. */
+        fun release(ctx: Context) {
+            Session.mqtt?.close(); Session.mqtt = null
+            Session.mesh?.close(); Session.mesh = null
+            ctx.stopService(Intent(ctx, BurstService::class.java))
+            Session.sink?.invoke("Radio released — tap the status to listen again")
+        }
+
         private const val HOLD = "listening";   // MIN: folded to the bottom of the shade, no status-bar icon
         private const val MSG = "texts"   // v2: a channel's sound/vibration can't change after creation, so a new id
 

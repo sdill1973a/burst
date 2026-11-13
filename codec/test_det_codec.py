@@ -163,6 +163,11 @@ def test_refusals():
     refused(frame[:3], "frame cut to the header")
     refused(b"\x08\x00\x00\xff\xff\xff\xff\x7f" + frame[4:], "varint token count 2^35 (over the cap, no model steps)")
     refused(b"\x07" + frame[1:], "wrong codec byte")
+    tiny = bytearray(b"\x08\x00\x00"); dc._wv(2000, tiny); tiny += b"\x55\x55\x55"   # 10-30: 3-byte body, 2,000 tokens
+    try:
+        dc.uncrunch(bytes(tiny), m, tails=[tail]); ok(False, "tiny frame claiming 2,000 tokens: decoded")
+    except dc.DecodeFailed as e:
+        ok("implausible" in str(e), f"tiny frame claiming 2,000 tokens: refused before any model step ({str(e)[:44]})")
     refused(frame, "only wrong histories offered", tails=[MSGS[i - 5:i - 1], MSGS[i - 6:i - 2], MSGS[i - 3:i + 1]])
     random.seed(5)
     for k in range(3):

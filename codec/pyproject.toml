@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "burst-codec"
-version = "0.1.0"
+version = "0.2.0"
 description = "Burst: exact text compression for LoRa/Meshtastic radios — a small language model both ends share, so only the surprise crosses the air."
 readme = "README.md"
 license = "Apache-2.0"

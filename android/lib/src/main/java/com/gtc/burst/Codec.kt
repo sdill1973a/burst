@@ -51,10 +51,7 @@ class Codec(codesBin: ByteArray, tablesJson: String) {
         fun sha2(bytes: ByteArray): ByteArray = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).copyOf(2)
     }
     /** The learned tail, capped: oldest messages drop until it fits TAIL_BYTES — exactly as the reference encoder fits it. */
-    private fun fitTail(tail: List<String>): List<String> {
-        var t = tail; while (t.isNotEmpty() && t.sumOf { it.toByteArray().size } > TAIL_BYTES) t = t.drop(1); return t
-    }
-    private fun primeFor(tail: List<String>) = prime + fitTail(tail).joinToString("") { it.trimEnd('\n') + "\n\n" }
+    private fun primeFor(tail: List<String>) = Wire2.primeFor(prime, tail)
 
     // crunchRaw/uncrunchRaw run reset() + eval() sequences on the one shared llama context: one at a time.
     @Synchronized fun crunchRaw(text: String, c: Double = cDefault, tail: List<String> = emptyList()): ByteArray {
@@ -132,6 +129,35 @@ class Codec(codesBin: ByteArray, tablesJson: String) {
         }
         return Decoded("", 0, false, 8, why)
     }
+
+    // ---- wire 2 (Wire2.kt): the 0x08 engine and body bytes; the header names the history and carries a 3-byte check.
+    private fun tailIdOf(tail: List<String>) = Wire2.tailId(primeFor(tail.takeLast(TAIL_N)))
+
+    /** A 0x0E frame (0x0F when carried), or plain 0x00 when that is smaller or the text cannot go through the engine. */
+    fun crunchW2(text: String, tail: List<String>, carried: Boolean = false): ByteArray {
+        val plain = byteArrayOf(0) + check(text) + text.toByteArray()
+        return crunch08(text, tail)?.let { Wire2.fromDet08(it, tailIdOf(tail), carried, text.toByteArray()) }?.takeIf { it.size < plain.size } ?: plain
+    }
+
+    /** Only candidates whose id matches the header are decoded; a frame none passes is refused, never shown. */
+    fun uncrunch2(b: ByteArray, tails: List<List<String>> = emptyList()): Decoded {
+        if (b.size < 6 || (b[0] != Wire2.CODEC && b[0] != Wire2.CARRY)) return Decoded("", 0, false, 8, "not a wire 2 frame")
+        val tid = b[1].toInt() and 0xFF; val chk = b.copyOfRange(2, 5); val det = Wire2.toDet08(b)
+        val cands = tails.map { it.takeLast(TAIL_N) }.distinct().toMutableList()
+        if (cands.none { it.isEmpty() }) cands.add(emptyList())
+        for (tail in cands.filter { tailIdOf(it) == tid }) {
+            val pt = BurstNative.tokenize(primeFor(tail).toByteArray())
+            val r = Det.use { BurstNative.detDecode(pt, det) to BurstNative.detLastReason() } ?: return Decoded("", 0, false, 8, "detlm unavailable")
+            val ids = r.first ?: continue
+            val bytes = BurstNative.detokenize(ids)
+            if (Wire2.check3(bytes).contentEquals(chk)) return Decoded(String(bytes, Charsets.UTF_8), 0, true, 8, tail = tail)
+        }
+        return Decoded("", 0, false, 8, "wire 2: no candidate history passed the check, not shown")
+    }
+
+    /** One link body of a 0x14 chain: wire 2, or plain. */
+    fun decodeW2Inner(f: ByteArray, tails: List<List<String>>): Decoded =
+        if (f[0] == Wire2.CODEC || f[0] == Wire2.CARRY) uncrunch2(f, tails) else uncrunch(f, tails)
 
     /** [tails] = candidate histories; the one whose id matches the header is used. No match → base prime, flagged. */
     @Synchronized fun uncrunchRaw(b: ByteArray, tails: List<List<String>> = emptyList()): Decoded {
